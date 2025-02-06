@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model: int, n_heads: int):
