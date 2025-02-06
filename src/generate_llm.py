@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import tiktoken
+from util.llm import GPT
 
 tokenizer = tiktoken.get_encoding('gpt2')
 context_length = 512
