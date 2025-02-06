@@ -11,7 +11,7 @@ context_length = 512
 def generate_sample():
       # number of tokens processed in a single batch
 
-    load_path = "./models/gpt_model_epoch_14500.pth"  # 保存時のファイル名に合わせる
+    load_path = "./models/gpt_model_epoch_16000.pth"  # 保存時のファイル名に合わせる
     checkpoint = torch.load(load_path, map_location='cuda')
     state_dict = {key.replace("_orig_mod.", ""): value for key, value in checkpoint['model_state_dict'].items()}
 
