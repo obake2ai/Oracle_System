@@ -78,26 +78,47 @@ def translate_to_japanese(text):
 # 単語単位で自動改行するヘルパー関数
 def wrap_text(text, max_width, font, font_scale, thickness):
     """
-    与えられたテキストを、cv2.getTextSize() を用いて max_width (ピクセル) を超えないように
+    与えられたテキストを、get_text_size() を用いて max_width (ピクセル) を超えないように
     単語単位で改行し、行のリストを返します。
-    単一の単語が max_width を超える場合は文字単位で改行します。
+    単一の単語（または日本語などスペースがない場合）は、全体が max_width に収まればそのまま、
+    収まらなければできるだけ多くの文字を１行に詰め、余った部分は次行にするようにします。
     """
+    # もしテキスト内にスペースがなければ（＝日本語などの場合）
+    if " " not in text:
+        if get_text_size(font, text)[0] <= max_width:
+            return [text]
+        lines = []
+        current_line = ""
+        for char in text:
+            test_line = current_line + char
+            if get_text_size(font, test_line)[0] <= max_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                current_line = char
+        if current_line:
+            lines.append(current_line)
+        return lines
+
+    # テキスト内にスペースがある場合（＝英語など）
     words = text.split(' ')
     lines = []
     current_line = ""
     for word in words:
         test_line = current_line + (" " if current_line else "") + word
-        if get_text_size(font, test_line)[0] <= max_text_width:
+        if get_text_size(font, test_line)[0] <= max_width:
             current_line = test_line
         else:
             if current_line:
                 lines.append(current_line)
                 current_line = word
             else:
+                # 単一の単語が max_width を超える場合は文字単位で改行
                 sub_line = ""
                 for char in word:
                     test_sub_line = sub_line + char
-                    if font.getsize(test_sub_line)[0] <= max_text_width:
+                    if get_text_size(font, test_sub_line)[0] <= max_width:
                         sub_line = test_sub_line
                     else:
                         lines.append(sub_line)
