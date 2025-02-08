@@ -29,7 +29,7 @@ torch.backends.cudnn.benchmark = True
 desc = "Customized StyleGAN3 on PyTorch (リアルタイムプレビュー & Colab デモ版)"
 parser = argparse.ArgumentParser(description=desc)
 parser.add_argument('-o', '--out_dir', default='_out', help='output directory')
-parser.add_argument('-m', '--model', default='models/embryo-stylegan3-r-network-snapshot-000096.pkl', help='path to pkl checkpoint file')
+parser.add_argument('-m', '--model', default='models/embryo-stylegan3-r-network-snapshot-000096', help='path to pkl checkpoint file')
 parser.add_argument('-l', '--labels', type=int, default=None, help='labels/categories for conditioning')
 # custom
 parser.add_argument('-s', '--size', default='1920-1080', help='Output resolution')
@@ -51,7 +51,7 @@ parser.add_argument('-at', "--anim_trans", action='store_true', help="add transl
 parser.add_argument('-ar', "--anim_rot", action='store_true', help="add rotation animation")
 parser.add_argument('-sb', '--shiftbase', type=float, default=0., help='Shift to the tile center?')
 parser.add_argument('-sm', '--shiftmax',  type=float, default=0., help='Random walk around tile center')
-parser.add_argument('--digress', type=float, default=0, help='distortion technique by Aydao (strength of the effect)')
+parser.add_argument('--digress', type=float, default=0.5, help='distortion technique by Aydao (strength of the effect)')
 #Affine Convertion
 parser.add_argument('-as', '--affine_scale', default='1.0-1.0')
 #Video Setting (通常の動画保存フラグはそのまま残す)
