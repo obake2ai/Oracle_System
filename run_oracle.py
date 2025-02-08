@@ -390,7 +390,9 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     映像上に英語（上半分）と日本語訳（下半分）でオーバーレイ表示します。
     """
     try:
-        if "x" in size:
+        if "-" in size:
+            h, w = size.split("-")
+        elif "x" in size:
             h, w = size.split("x")
         elif "X" in size:
             h, w = size.split("X")
