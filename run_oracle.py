@@ -48,10 +48,10 @@ text_lock = threading.Lock()
 # ──────────────────────────────
 # ChatGPT API を利用した翻訳関数
 def translate_to_japanese(text):
-    prompt = f"次の英語のテキストを、なるべく元の文体を保ったまま、神秘的な神話テキストとして日本語に翻訳してください:\n\n{text}"
+    prompt = f"次の英語のテキストを、なるべく元の文体を保ったまま、神秘的な神話テキストとして日本語に翻訳してください。出力は翻訳結果の見返してください。:\n\n{text}"
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # 必要に応じて変更してください
+            model="gpt-4o",  # 必要に応じて変更してください
             messages=[
                 {"role": "system", "content": "You are a professional translator."},
                 {"role": "user", "content": prompt}
