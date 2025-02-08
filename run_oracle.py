@@ -346,7 +346,7 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
                     sub_line = ""
                     for char in word:
                         test_sub_line = sub_line + char
-                        if draw.textsize(test_sub_line, font=font)[0] <= max_text_width:
+                        if get_text_size(font, test_line)[0] <= max_text_width:
                             sub_line = test_sub_line
                         else:
                             lines.append(sub_line)
