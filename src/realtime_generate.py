@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+import argparse
 import random
 import numpy as np
 from imageio import imsave
@@ -23,142 +24,47 @@ from PIL import Image
 import queue
 import threading
 
-import click
-from types import SimpleNamespace
-
 torch.backends.cudnn.benchmark = True
 
-###############################################################################
-# クリックによるコマンドライン引数定義
-###############################################################################
+desc = "Customized StyleGAN3 on PyTorch (リアルタイムプレビュー & Colab デモ版)"
+parser = argparse.ArgumentParser(description=desc)
+parser.add_argument('-o', '--out_dir', default='_out', help='output directory')
+parser.add_argument('-m', '--model', default='models/embryo-stylegan3-r-network-snapshot-000096.pkl', help='path to pkl checkpoint file')
+parser.add_argument('-l', '--labels', type=int, default=None, help='labels/categories for conditioning')
+# custom
+parser.add_argument('-s', '--size', default='1920-1080', help='Output resolution')
+parser.add_argument('-sc', '--scale_type', default='pad', help="may include pad, side, symm (also centr, fit)")
+parser.add_argument('-lm', '--latmask', default=None, help='external mask file (or directory) for multi latent blending')
+parser.add_argument('-n', '--nXY', default='1-1', help='multi latent frame split count by X (width) and Y (height)')
+parser.add_argument('--splitfine', type=float, default=0, help='multi latent frame split edge sharpness (0 = smooth, higher => finer)')
+parser.add_argument('--splitmax', type=int, default=None, help='max count of latents for frame splits (to avoid OOM)')
+parser.add_argument('--trunc', type=float, default=0.9, help='truncation psi 0..1 (lower = stable, higher = various)')
+parser.add_argument('--save_lat', action='store_true', help='save latent vectors to file')
+parser.add_argument('-v', '--verbose', action='store_true')
+parser.add_argument("--noise_seed", type=int, default=3025)
+# animation
+parser.add_argument('-f', '--frames', default='200-25', help='(未使用) total frames to generate, length of interpolation step')
+parser.add_argument("--cubic", action='store_true', help="use cubic splines for smoothing")
+parser.add_argument("--gauss", action='store_true', help="use Gaussian smoothing")
+# transform SG3
+parser.add_argument('-at', "--anim_trans", action='store_true', help="add translation animation")
+parser.add_argument('-ar', "--anim_rot", action='store_true', help="add rotation animation")
+parser.add_argument('-sb', '--shiftbase', type=float, default=0., help='Shift to the tile center?')
+parser.add_argument('-sm', '--shiftmax',  type=float, default=0., help='Random walk around tile center')
+parser.add_argument('--digress', type=float, default=0, help='distortion technique by Aydao (strength of the effect)')
+#Affine Convertion
+parser.add_argument('-as', '--affine_scale', default='1.0-1.0')
+#Video Setting (通常の動画保存フラグはそのまま残す)
+parser.add_argument('--framerate', default=30)
+parser.add_argument('--prores', action='store_true', help='output video in ProRes format')
+parser.add_argument('--variations', type=int, default=1)
 
-@click.command()
-@click.option("-o", "--out_dir", default="_out", show_default=True,
-              help="出力先ディレクトリ")
-@click.option("-m", "--model", default="models/embryo-stylegan3-r-network-snapshot-000096.pkl", show_default=True,
-              help="pkl チェックポイントファイルのパス")
-@click.option("-l", "--labels", type=int, default=None,
-              help="条件付け用のラベル（カテゴリ番号）")
-@click.option("-s", "--size", default=None,
-              help="出力解像度 (例: '1024-1024')")
-@click.option("-sc", "--scale_type", default="pad", show_default=True,
-              help="pad, side, symm（centr, fit も可）")
-@click.option("-lm", "--latmask", default=None,
-              help="多重潜在ブレンディング用の外部マスクファイル（またはディレクトリ）")
-# ※ オプション名は大文字指定していますが、click は内部で小文字に変換するため
-@click.option("-n", "--nXY", "nxy", default="1-1", show_default=True,
-              help="横×縦のフレーム分割数 (例: '1-1')")
-@click.option("--splitfine", type=float, default=0.0, show_default=True,
-              help="分割時のエッジシャープネス（0=滑らか、値が大きいほど細かく）")
-@click.option("--splitmax", type=int, default=None,
-              help="分割フレームの潜在数の上限（OOM防止用）")
-@click.option("--trunc", type=float, default=0.8, show_default=True,
-              help="truncation psi 0～1（低いほど安定、高いほど多様）")
-@click.option("--save_lat", is_flag=True,
-              help="潜在ベクトルをファイルに保存する")
-@click.option("-v", "--verbose", is_flag=True,
-              help="詳細出力モード")
-@click.option("--noise_seed", type=int, default=3025, show_default=True,
-              help="ノイズシード")
-@click.option("-f", "--frames", default="200-25", show_default=True,
-              help=("1補間区間における総フレーム数と補間ステップを指定します (例: '200-25')。\n"
-                    "無限リアルタイム生成中でも、各補間区間で生成されるフレーム数は、\n"
-                    "・補間区間の長さ、アニメーションの滑らかさや変化の速さ、\n"
-                    "・平行移動や回転などの変換パラメータの生成に利用されるため、\n"
-                    "ユーザーが調整できるように重要なパラメータとなっています。"))
-@click.option("--cubic", is_flag=True,
-              help="補間に cubic spline を使用")
-@click.option("--gauss", is_flag=True,
-              help="補間に Gaussian smoothing を使用")
-@click.option("-at", "--anim_trans", is_flag=True,
-              help="平行移動アニメーションを追加")
-@click.option("-ar", "--anim_rot", is_flag=True,
-              help="回転アニメーションを追加")
-@click.option("-sb", "--shiftbase", type=float, default=0.0, show_default=True,
-              help="タイル中心へのシフト量")
-@click.option("-sm", "--shiftmax", type=float, default=0.0, show_default=True,
-              help="タイル中心周りのランダムウォーク幅")
-@click.option("--digress", type=float, default=0.0, show_default=True,
-              help="Aydao による歪み効果の強さ")
-@click.option("-as", "--affine_scale", default="1.0-1.0", show_default=True,
-              help="Affine 変換用拡大率 (例: '1.0-1.0')")
-@click.option("--framerate", type=int, default=30, show_default=True,
-              help="ビデオのフレームレート")
-@click.option("--prores", is_flag=True,
-              help="ProRes 形式で動画出力")
-@click.option("--variations", type=int, default=1, show_default=True,
-              help="バリエーション数")
-@click.option("--colab_demo", is_flag=True,
-              help="Colab 上でサンプル動作するモード")
-@click.option("--method", type=click.Choice(['smooth', 'random_walk']), default="smooth", show_default=True,
-              help="無限生成方式: smooth は latent_anima、random_walk は各フレームに乱数を追加")
-def main(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc, save_lat,
-         verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase, shiftmax, digress,
-         affine_scale, framerate, prores, variations, colab_demo, method):
-    """
-    Customized StyleGAN3 on PyTorch
-    (リアルタイムプレビュー & Colab デモ版)
-    """
-    # size: 文字列 "幅-高さ" をリスト [高さ, 幅] に変換（1つの数値なら両方同じ値）
-    if size is not None:
-        size = [int(s) for s in size.split('-')][::-1]
-        if len(size) == 1:
-            size = size * 2
+# Colab 用デモフラグ
+parser.add_argument('--colab_demo', action='store_true', help='Colab上でサンプル動作をするモード')
 
-    # affine_scale: "scale_y-scale_x" をリスト [scale_x, scale_y] に変換
-    if affine_scale is not None:
-        affine_scale = [float(s) for s in affine_scale.split('-')][::-1]
-
-    # frames: "総フレーム数-補間ステップ" を分解
-    frames_split = frames.split('-')
-    if len(frames_split) != 2:
-        raise click.ClickException("Invalid format for --frames. Expected format 'total_frames-fstep'.")
-    frames_val, fstep = [int(s) for s in frames_split]
-
-    # 引数をまとめた名前空間を生成（もともとの argparse の namespace と同様に）
-    a = SimpleNamespace(
-        out_dir=out_dir,
-        model=model,
-        labels=labels,
-        size=size,
-        scale_type=scale_type,
-        latmask=latmask,
-        nxy=nxy,
-        splitfine=splitfine,
-        splitmax=splitmax,
-        trunc=trunc,
-        save_lat=save_lat,
-        verbose=verbose,
-        noise_seed=noise_seed,
-        frames=frames_val,
-        fstep=fstep,
-        cubic=cubic,
-        gauss=gauss,
-        anim_trans=anim_trans,
-        anim_rot=anim_rot,
-        shiftbase=shiftbase,
-        shiftmax=shiftmax,
-        digress=digress,
-        affine_scale=affine_scale,
-        framerate=framerate,
-        prores=prores,
-        variations=variations,
-        colab_demo=colab_demo,
-        method=method
-    )
-
-    if a.colab_demo:
-        click.echo("Colabデモモードで起動します (cv2によるリアルタイムウィンドウは使用しません)")
-        for i in range(a.variations):
-            generate_colab_demo(a, a.noise_seed + i)
-    else:
-        click.echo("ローカル環境でのリアルタイムプレビューを行います (cv2使用)")
-        for i in range(a.variations):
-            generate_realtime_local(a, a.noise_seed + i)
-
-###############################################################################
-# 以下、もとの関数群
-###############################################################################
+# 新規追加: 無限リアルタイム生成の方式を指定
+parser.add_argument('--method', default='smooth', choices=['smooth', 'random_walk'],
+                    help='smooth: latent_animaを使ったなめらかな無限補間, random_walk: 毎フレーム少し乱数を足す。')
 
 def img_resize_for_cv2(img):
     """
@@ -180,10 +86,13 @@ def make_out_name(a):
         return str(v).replace('.', '_')
 
     model_name = basename(a.model)
+
     out_name = f"{model_name}_seed{a.noise_seed}"
+
     if a.size is not None:
         out_name += f"_size{a.size[1]}x{a.size[0]}"
-    out_name += f"_nXY{a.nxy}"
+
+    out_name += f"_nXY{a.nXY}"
     out_name += f"_frames{a.frames}"
     out_name += f"_trunc{fmt_f(a.trunc)}"
     if a.cubic:
@@ -201,6 +110,7 @@ def make_out_name(a):
         out_name += "_affine"
         out_name += f"_s{fmt_f(a.affine_scale[0])}-{fmt_f(a.affine_scale[1])}"
     out_name += f"_fps{a.framerate}"
+
     return out_name
 
 def checkout(output, i, out_dir):
@@ -211,17 +121,24 @@ def checkout(output, i, out_dir):
     filename = osp.join(out_dir, "%06d.%s" % (i, ext))
     imsave(filename, output[0], quality=95)
 
+# =============================================
+# 1) スムース (latent_anima) を無限に返すジェネレータ
+# =============================================
 def infinite_latent_smooth(z_dim, device, cubic=False, gauss=False, seed=None,
                            chunk_size=30, uniform=False):
     """
-    latent_anima を使って、2つの潜在ベクトル間の補間フレームを chunk_size 生成し、
-    次の区間に移るときに新たな潜在ベクトルを用意して無限に yield するジェネレータ。
+    latent_anima を使って「2つの潜在ベクトル間を補間するフレームをchunk_size生成」→
+    次の区間へ移るときに新しいランダム潜在ベクトルを用意→… と繰り返し、
+    無限に潜在ベクトルをyieldするジェネレータ。
     """
     rng = np.random.RandomState(seed) if seed is not None else np.random
     lat1 = rng.randn(z_dim)
     while True:
         lat2 = rng.randn(z_dim)
         key_latents = np.stack([lat1, lat2], axis=0)  # (2, z_dim)
+
+        # latent_anima で chunk_size 個分の補間を生成
+        # transit=chunk_size, frames=chunk_size, loop=False → 1区間分を単純slerp or cubic
         latents_np = latent_anima(
             shape=(z_dim,),
             frames=chunk_size,
@@ -229,7 +146,7 @@ def infinite_latent_smooth(z_dim, device, cubic=False, gauss=False, seed=None,
             key_latents=key_latents,
             somehot=None,
             smooth=0.5,
-            uniform=uniform,
+            uniform=uniform,  # Trueにすると lerp, Falseにすると slerp
             cubic=cubic,
             gauss=gauss,
             seed=None,
@@ -237,30 +154,39 @@ def infinite_latent_smooth(z_dim, device, cubic=False, gauss=False, seed=None,
             loop=False,
             verbose=False
         )  # shape=(chunk_size, z_dim)
+
+        # 今区間で生成されたフレームを1つずつyield
         for i in range(len(latents_np)):
-            yield torch.from_numpy(latents_np[i]).unsqueeze(0).to(device)
+            yield torch.from_numpy(latents_np[i]).unsqueeze(0).to(device)  # (1, z_dim)
+        # 次のループでは lat2 から 新しいlat3 へ補間
         lat1 = lat2
 
+
+# =============================================
+# 2) ランダムウォークで無限に返すジェネレータ
+# =============================================
 def infinite_latent_random_walk(z_dim, device, seed=None, step_size=0.02):
     """
-    前回の潜在ベクトルに毎フレーム少量の乱数を加えることでランダムウォークを行うジェネレータ。
+    毎フレーム、前回の潜在ベクトルに少しだけ乱数を加えて更新する。
+    ピクピク動きやすいが簡単。
     """
     rng = np.random.RandomState(seed) if seed is not None else np.random
-    z_prev = rng.randn(z_dim)
+    z_prev = rng.randn(z_dim)  # 初期
     while True:
+        # 乱数を加えて更新 (ランダムウォーク)
         z_prev = z_prev + rng.randn(z_dim) * step_size
         yield torch.from_numpy(z_prev).unsqueeze(0).to(device)
 
+
+# =============================================
+# 3) 実際にリアルタイムプレビューする関数
+# =============================================
 def generate_realtime_local(a, noise_seed):
     """
-    無限リアルタイム生成と OpenCV による表示を行う関数。
-    --method で 'smooth'（latent_anima を利用）か 'random_walk' を選択します。
+    こちらが無限リアルタイム生成 + OpenCV表示を行う本体。
+    --method smooth か --method random_walk でモードを切り替える。
     """
-    import torch, numpy as np, random, os, os.path as osp, cv2, time, sys, queue, threading
-    from util.utilgan import img_read, img_list, latent_anima, basename
-    import dnnlib, legacy
 
-    # シード設定
     torch.manual_seed(noise_seed)
     np.random.seed(noise_seed)
     random.seed(noise_seed)
@@ -268,42 +194,36 @@ def generate_realtime_local(a, noise_seed):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(a.out_dir, exist_ok=True)
 
-    # ネットワーク読み込み用引数
+    # ネットワーク読み込み --------------------------------
     Gs_kwargs = dnnlib.EasyDict()
     Gs_kwargs.verbose = a.verbose
     Gs_kwargs.size = a.size
     Gs_kwargs.scale_type = a.scale_type
 
-    # --- マスク(lmask)の設定 ---
+    # mask/blend latents with external latmask or by splitting the frame
     if a.latmask is None:
-        nHW = [int(s) for s in a.nxy.split('-')][::-1]
-        if len(nHW) != 2:
-            raise ValueError(f"Wrong count nXY: {len(nHW)} (must be 2)")
+        nHW = [int(s) for s in a.nXY.split('-')][::-1]
+        assert len(nHW)==2, ' Wrong count nXY: %d (must be 2)' % len(nHW)
         n_mult = nHW[0] * nHW[1]
-        if a.splitmax is not None:
-            n_mult = min(n_mult, a.splitmax)
+        if a.splitmax is not None: n_mult = min(n_mult, a.splitmax)
         Gs_kwargs.countHW = nHW
         Gs_kwargs.splitfine = a.splitfine
-        if a.splitmax is not None:
-            Gs_kwargs.splitmax = a.splitmax
-        if a.verbose and n_mult > 1:
-            print(' Latent blending w/split frame %d x %d' % (nHW[1], nHW[0]))
+        if a.splitmax is not None: Gs_kwargs.splitmax = a.splitmax
+        if a.verbose is True and n_mult > 1: print(' Latent blending w/split frame %d x %d' % (nHW[1], nHW[0]))
         lmask = [None]
+
     else:
         n_mult = 2
-        nHW = [1, 1]
-        if osp.isfile(a.latmask):
-            lmask = np.asarray([[img_read(a.latmask)[:, :, 0] / 255.]])
-        elif osp.isdir(a.latmask):
-            lmask = np.expand_dims(np.asarray([img_read(f)[:, :, 0] / 255. for f in img_list(a.latmask)]), 1)
+        nHW = [1,1]
+        if osp.isfile(a.latmask): # single file
+            lmask = np.asarray([[img_read(a.latmask)[:,:,0] / 255.]]) # [1,1,h,w]
+        elif osp.isdir(a.latmask): # directory with frame sequence
+            lmask = np.expand_dims(np.asarray([img_read(f)[:,:,0] / 255. for f in img_list(a.latmask)]), 1) # [n,1,h,w]
         else:
-            print(' !! Blending mask not found:', a.latmask)
-            exit(1)
-        if a.verbose:
-            print(' Latent blending with mask', a.latmask, lmask.shape)
-        lmask = np.concatenate((lmask, 1 - lmask), 1)
+            print(' !! Blending mask not found:', a.latmask); exit(1)
+        if a.verbose is True: print(' Latent blending with mask', a.latmask, lmask.shape)
+        lmask = np.concatenate((lmask, 1 - lmask), 1) # [n,2,h,w]
         lmask = torch.from_numpy(lmask).to(device)
-    # --- マスク設定ここまで ---
 
     pkl_name = osp.splitext(a.model)[0]
     if '.pkl' in a.model.lower():
@@ -320,6 +240,7 @@ def generate_realtime_local(a, noise_seed):
     z_dim = Gs.z_dim
     c_dim = Gs.c_dim
 
+    # ラベル（条件付け）
     if c_dim > 0 and a.labels is not None:
         label = torch.zeros([1, c_dim], device=device)
         label_idx = min(int(a.labels), c_dim - 1)
@@ -327,127 +248,218 @@ def generate_realtime_local(a, noise_seed):
     else:
         label = None
 
-    # --- 初回ウォームアップ推論 ---
+    # NEW SG3
+    if hasattr(Gs.synthesis, 'input'): # SG3
+        if a.anim_trans is True:
+            hw_centers = [np.linspace(-1+1/n, 1-1/n, n) for n in nHW]
+            yy,xx = np.meshgrid(*hw_centers)
+            xscale = [s / Gs.img_resolution for s in a.size]
+            hw_centers = np.dstack((yy.flatten()[:n_mult], xx.flatten()[:n_mult])) * xscale * 0.5 * a.shiftbase
+            hw_scales = np.array([2. / n for n in nHW]) * a.shiftmax
+            shifts = latent_anima((n_mult, 2), a.frames, a.fstep, uniform=True, cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, verbose=False) # [frm,X,2]
+            shifts = hw_centers + (shifts - 0.5) * hw_scales
+        else:
+            shifts = np.zeros((1, n_mult, 2))
+        if a.anim_rot is True:
+            angles = latent_anima((n_mult, 1), a.frames, a.frames//4, uniform=True, cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, verbose=False) # [frm,X,1]
+            angles = (angles - 0.5) * 180.
+        else:
+            angles = np.zeros((1, n_mult, 1))
+        # 拡大率 (scale_x, scale_y) を各フレームに反映
+        # ここでは a.affine_scale = [scale_y, scale_x] を想定し、全フレーム同一値にしています
+        # (毎フレームアニメさせたい場合は latent_anima 等で生成してもOK)
+        scale_array = np.array([a.affine_scale[0], a.affine_scale[1]], dtype=np.float32)  # (scale_y, scale_x)
+        # shifts.shape = [frame_count, n_mult, 2]
+        # angles.shape = [frame_count, n_mult, 1]
+        #  → 同じフレーム数・枚数に合わせて scale_array をタイル展開
+        scales = np.tile(scale_array, (shifts.shape[0], shifts.shape[1], 1))  # [frame_count, n_mult, 2]
+
+        shifts = torch.from_numpy(shifts).to(device)
+        angles = torch.from_numpy(angles).to(device)
+        scales = torch.from_numpy(scales).to(device)   # [frame_count, X, 2]
+
+        trans_params = list(zip(shifts, angles, scales))
+
+    # distort image by tweaking initial const layer
+    first_layer_channels = Gs.synthesis.input.channels
+    first_layer_size     = Gs.synthesis.input.size
+    if isinstance(first_layer_size, (list, tuple, np.ndarray)):
+        h, w = first_layer_size[0], first_layer_size[1]
+    else:
+        h, w = first_layer_size, first_layer_size
+
+    shape_for_dconst = [1, first_layer_channels, h, w]
+    #("debug shape_for_dconst =", shape_for_dconst)
+
+    if a.digress != 0:
+        dconst_list = []
+        for i in range(n_mult):
+            dc_tmp = a.digress * latent_anima(
+                shape_for_dconst,  # [1, 1024, 36, 36] 等
+                a.frames, a.fstep, cubic=True, seed=noise_seed, verbose=False
+            )
+            dconst_list.append(dc_tmp)
+        dconst = np.concatenate(dconst_list, axis=1)
+    else:
+        dconst = np.zeros([latents.shape[0], 1, first_layer_channels, h, w])
+
+    dconst = torch.from_numpy(dconst).to(device).to(torch.float32)
+
+    # 初回ウォームアップ推論
     with torch.no_grad():
         if custom and hasattr(Gs.synthesis, 'input'):
-            # カスタムモデルの場合は位置引数で渡す
-            _ = Gs(
-                torch.randn([1, z_dim], device=device),
-                label,
-                lmask[0],
-                (torch.zeros([1,2], device=device),
-                 torch.zeros([1,1], device=device),
-                 torch.ones([1,2], device=device)),
-                torch.zeros(1, device=device),  # ここは元コードに合わせた dconst[0] の値
-                noise_mode='const'
-            )
+            _ = Gs(torch.randn([1, z_dim], device=device), label, lmask[0],
+                   (torch.zeros([1,2], device=device),
+                    torch.zeros([1,1], device=device),
+                    torch.ones ([1,2], device=device)),
+                   dconst[0], noise_mode='const')
         else:
-            _ = Gs(
-                torch.randn([1, z_dim], device=device),
-                label,
-                lmask[0],
-                truncation_psi=a.trunc,
-                noise_mode='const'
-            )
-    # --- 初回ウォームアップここまで ---
+            _ = Gs(torch.randn([1, z_dim], device=device), label, lmask[0],
+                   truncation_psi=a.trunc, noise_mode='const')
 
+    # 1) 生成したフレームを格納するキュー。maxsizeは適当。
     frame_queue = queue.Queue(maxsize=30)
+
+    # 2) スレッド停止用のイベント
     stop_event = threading.Event()
 
-    # 潜在ベクトル生成（関数は省略、元コードの infinite_latent_smooth / random_walk を使用）
+    # どちらのモードで潜在ベクトルを無限生成するか切り替え
     if a.method == 'random_walk':
         print("=== Real-time Preview (random_walk mode) ===")
-        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=a.noise_seed, step_size=0.02)
+        latent_gen = infinite_latent_random_walk(
+            z_dim=z_dim, device=device, seed=noise_seed, step_size=0.02
+        )
     else:
         print("=== Real-time Preview (smooth latent_anima mode) ===")
-        latent_gen = infinite_latent_smooth(z_dim=z_dim, device=device, cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, chunk_size=60, uniform=False)
+        latent_gen = infinite_latent_smooth(
+            z_dim=z_dim, device=device,
+            cubic=a.cubic, gauss=a.gauss,
+            seed=noise_seed,
+            chunk_size=60,   # 1区間に60フレームで補間 (お好みで)
+            uniform=False    # False→slerp, True→lerp
+        )
 
+    # 3) フレーム生成(推論)を行うサブスレッドを定義
     def producer_thread():
         frame_idx_local = 0
         while not stop_event.is_set():
+            # ここで latent を1個取り出して推論
             z_current = next(latent_gen)
-            if lmask[0] is None:
-                latmask_current = None
-            else:
-                latmask_current = lmask[frame_idx_local % len(lmask)]
-            # ここでは dconst_current はダミー値として torch.zeros を使用（元コードに合わせて適宜変更してください）
-            dconst_current = torch.zeros(1, device=device)
+            latmask   = lmask[frame_idx_local % len(lmask)]
+            dconst_current = dconst[frame_idx % len(dconst)]
+
             if custom and hasattr(Gs.synthesis, 'input'):
                 trans_param = (
-                    torch.zeros([1, 2], device=device),
-                    torch.zeros([1, 1], device=device),
-                    torch.ones([1, 2], device=device)
+                    torch.zeros([1,2], device=device),
+                    torch.zeros([1,1], device=device),
+                    torch.ones ([1,2], device=device)
                 )
             else:
                 trans_param = None
+
             with torch.no_grad():
                 if custom and hasattr(Gs.synthesis, 'input'):
-                    out = Gs(
-                        z_current,
-                        label,
-                        latmask_current,
-                        trans_param,
-                        dconst_current,
-                        noise_mode='const'
-                    )
+                    out = Gs(z_current, label, latmask,
+                             trans_param, dconst_current,
+                             truncation_psi=a.trunc, noise_mode='const')
                 else:
-                    out = Gs(
-                        z_current,
-                        label,
-                        latmask_current,
-                        truncation_psi=a.trunc,
-                        noise_mode='const'
-                    )
+                    out = Gs(z_current, label, latmask,
+                             truncation_psi=a.trunc, noise_mode='const')
+
             out = (out.permute(0,2,3,1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
-            out_np = out[0].cpu().numpy()[..., ::-1]
+            out_np = out[0].cpu().numpy()[..., ::-1]  # BGR
+
+            # キューが満杯ならブロックし、空きが出るまで待機
             frame_queue.put(out_np)
             frame_idx_local += 1
 
+    # 4) スレッドを起動
     thread_prod = threading.Thread(target=producer_thread, daemon=True)
     thread_prod.start()
 
     print("ウィンドウが表示されます。終了する場合は 'q' キーを押してください。")
+
+    # FPS計測用
     fps_count = 0
     t0 = time.time()
+
+    # メインループ (無限)
+    frame_idx = 0
     while True:
+        # 5) バッファから1枚取り出して描画
+        #    producer側でまだフレームが用意できていないときはブロック (待機)
         out_cv = frame_queue.get()
+
+        # OpenCVで表示
         out_cv = img_resize_for_cv2(out_cv)
         cv2.imshow("StyleGAN3 Real-time Preview", out_cv)
+
+        # FPS計測
         fps_count += 1
         elapsed = time.time() - t0
-        if elapsed >= 1.0:
-            print(f"\r{fps_count / elapsed:.2f} fps", end='')
+        if elapsed >= 1.0:  # 1秒ごとに更新
+            fps = fps_count / elapsed
+            # 同じ行に上書き表示 ("\r" で行頭に戻り、print(..., end='')
+            print(f"\r{fps:.2f} fps", end='')
             sys.stdout.flush()
             t0 = time.time()
             fps_count = 0
+
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             print("\n終了します。")
             stop_event.set()
             break
+
+        frame_idx += 1
+
     cv2.destroyAllWindows()
 
 def generate_colab_demo(a, noise_seed):
     """
-    Colab 上で短いループを回し、画像をノートブックセルに表示するサンプルモード。
+    Colab上で短いループを回して画像をノートブックセルに表示し続けるサンプルモード。
+    こちらはオフライン(バッチ)想定でフレーム数決め打ち、ループ再生する。
     """
     print("=== Colab デモ開始 ===")
     print("(こちらは従来のフレーム固定デモです)")
+
+    # 必要最低限だけネットワーク読み込み (簡略)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     pkl_name = osp.splitext(a.model)[0]
     with dnnlib.util.open_url(pkl_name + '.pkl') as f:
         Gs = legacy.load_network_pkl(f)['G_ema'].to(device)
+
     frames = 30
     for i in range(frames):
         z = torch.randn([1, Gs.z_dim], device=device)
         with torch.no_grad():
             output = Gs(z, None, truncation_psi=a.trunc, noise_mode='const')
-        output = (output.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        output = (output.permute(0,2,3,1)*127.5+128).clamp(0,255).to(torch.uint8)
         out_np = output[0].cpu().numpy()
         clear_output(wait=True)
         display(Image.fromarray(out_np, 'RGB'))
         time.sleep(0.2)
+
     print("=== Colab デモ終了 ===")
+
+def main():
+    a = parser.parse_args()
+    if a.size is not None:
+        a.size = [int(s) for s in a.size.split('-')][::-1]
+        if len(a.size) == 1: a.size = a.size * 2
+    if a.affine_scale is not None: a.affine_scale = [float(s) for s in a.affine_scale.split('-')][::-1]
+    [a.frames, a.fstep] = [int(s) for s in a.frames.split('-')]
+
+    if a.colab_demo:
+        print("Colabデモモードで起動します (cv2によるリアルタイムウィンドウは使いません)")
+        for i in range(a.variations):
+            generate_colab_demo(a, a.noise_seed + i)
+    else:
+        print("ローカル環境でのリアルタイムプレビューを行います (cv2使用)")
+        # 無限生成プレビュー (smooth or random_walk)
+        for i in range(a.variations):
+            generate_realtime_local(a, a.noise_seed + i)
 
 if __name__ == '__main__':
     main()
