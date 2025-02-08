@@ -45,7 +45,8 @@ torch.backends.cudnn.benchmark = True
               help="pad, side, symm（centr, fit も可）")
 @click.option("-lm", "--latmask", default=None,
               help="多重潜在ブレンディング用の外部マスクファイル（またはディレクトリ）")
-@click.option("-n", "--nXY", default="1-1", show_default=True,
+# ※ オプション名は大文字指定していますが、click は内部で小文字に変換するため
+@click.option("-n", "--nXY", "nxy", default="1-1", show_default=True,
               help="横×縦のフレーム分割数 (例: '1-1')")
 @click.option("--splitfine", type=float, default=0.0, show_default=True,
               help="分割時のエッジシャープネス（0=滑らか、値が大きいほど細かく）")
@@ -91,7 +92,7 @@ torch.backends.cudnn.benchmark = True
               help="Colab 上でサンプル動作するモード")
 @click.option("--method", type=click.Choice(['smooth', 'random_walk']), default="smooth", show_default=True,
               help="無限生成方式: smooth は latent_anima、random_walk は各フレームに乱数を追加")
-def main(out_dir, model, labels, size, scale_type, latmask, nXY, splitfine, splitmax, trunc, save_lat,
+def main(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc, save_lat,
          verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase, shiftmax, digress,
          affine_scale, framerate, prores, variations, colab_demo, method):
     """
@@ -115,7 +116,6 @@ def main(out_dir, model, labels, size, scale_type, latmask, nXY, splitfine, spli
     frames_val, fstep = [int(s) for s in frames_split]
 
     # 引数をまとめた名前空間を生成（もともとの argparse の namespace と同様に）
-    from types import SimpleNamespace
     a = SimpleNamespace(
         out_dir=out_dir,
         model=model,
@@ -123,7 +123,7 @@ def main(out_dir, model, labels, size, scale_type, latmask, nXY, splitfine, spli
         size=size,
         scale_type=scale_type,
         latmask=latmask,
-        nXY=nXY,
+        nxy=nxy,
         splitfine=splitfine,
         splitmax=splitmax,
         trunc=trunc,
@@ -183,7 +183,7 @@ def make_out_name(a):
     out_name = f"{model_name}_seed{a.noise_seed}"
     if a.size is not None:
         out_name += f"_size{a.size[1]}x{a.size[0]}"
-    out_name += f"_nXY{a.nXY}"
+    out_name += f"_nXY{a.nxy}"
     out_name += f"_frames{a.frames}"
     out_name += f"_trunc{fmt_f(a.trunc)}"
     if a.cubic:
@@ -270,7 +270,7 @@ def generate_realtime_local(a, noise_seed):
     Gs_kwargs.scale_type = a.scale_type
 
     if a.latmask is None:
-        nHW = [int(s) for s in a.nXY.split('-')][::-1]
+        nHW = [int(s) for s in a.nxy.split('-')][::-1]
         if len(nHW) != 2:
             raise ValueError(f"Wrong count nXY: {len(nHW)} (must be 2)")
         n_mult = nHW[0] * nHW[1]
@@ -361,7 +361,7 @@ def generate_realtime_local(a, noise_seed):
         for i in range(n_mult):
             dc_tmp = a.digress * latent_anima(
                 shape_for_dconst,
-                a.frames, a.fstep, cubic=True, seed=noise_seed, verbose=False
+                a.frames, a.fstep, cubic=True, seed=a.noise_seed, verbose=False
             )
             dconst_list.append(dc_tmp)
         dconst = np.concatenate(dconst_list, axis=1)
