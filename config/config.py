@@ -1,0 +1,33 @@
+STYLEGAN_CONFIG = {
+    "out_dir": "_out",
+    "model": "models/embryo-stylegan3-r-network-snapshot-000096",
+    "labels": None,
+    "size": "1280-720",            # 出力解像度 (後で [height, width] に変換)
+    "scale_type": "pad",
+    "latmask": None,
+    "nXY": "1-1",                # latent blending 用：フレームの分割数（例："1-1"）
+    "splitfine": 0.0,            # 分割時のエッジシャープネス（0～）
+    "splitmax": None,            # 分割時の最大 latent 数（OOM 回避用）
+    "trunc": 0.9,                # truncation psi
+    "save_lat": False,           # latent 保存フラグ
+    "verbose": False,
+    "noise_seed": 3025,
+    # アニメーション関連
+    "frames": "200-25",          # （未使用だが互換性のため）
+    "cubic": False,
+    "gauss": False,
+    # SG3 の変換（アニメーション）パラメータ
+    "anim_trans": True,
+    "anim_rot": True,
+    "shiftbase": 0.5,
+    "shiftmax": 0.2,
+    "digress": -10,
+    # Affine Conversion（拡大縮小）
+    "affine_scale": "0.7-0.7",
+    # 動画保存などの設定
+    "framerate": 30,
+    "prores": False,
+    "variations": 1,
+    # 無限リアルタイム生成の方式
+    "method": "smooth"
+}

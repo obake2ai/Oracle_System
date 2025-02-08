@@ -1,406 +1,394 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+Ubuntu（2 GPU搭載）環境において、StyleGAN3 によるリアルタイム映像生成と
+GPT によるテキスト生成＋ChatGPT API翻訳を組み合わせ、
+映像上に英語（上半分）と日本語訳（下半分）の二段組でオーバーレイ表示するサンプルコードです。
+
+※スタイルガン関連の各種パラメータは、config/config.py にまとめてあります。
+"""
+
 import os
-import os.path as osp
-import argparse
+import sys
+import time
+import threading
+import queue
 import random
+
+import cv2
 import numpy as np
-from imageio import imsave
-
 import torch
-
 import dnnlib
 import legacy
-from torch_utils import misc
+import click
+import tiktoken
+import openai
 
-from util.utilgan import latent_anima, basename, img_read, img_list
-from util.progress_bar import progbar
+# API キーは config/api.py からインポート
+from config.api import OPENAI_API_KEY
+openai.api_key = OPENAI_API_KEY
 
-# Colab or local preview
-import cv2
-import time
-import sys
-from IPython.display import display, clear_output
-from PIL import Image
+# StyleGAN3 用設定を config/config.py からインポート
+from config.config import STYLEGAN_CONFIG
 
-import queue
-import threading
+# src/realtime_generate.py 内の必要関数
+from src.realtime_generate import infinite_latent_smooth, infinite_latent_random_walk, img_resize_for_cv2
+# GPT 用ローカルモデル（util/llm.py の GPT クラス）
+from util.llm import GPT
 
-torch.backends.cudnn.benchmark = True
+# グローバル変数（描画テキスト：英語原文と日本語訳）
+current_text = {"en": "", "ja": ""}
+text_lock = threading.Lock()
 
-desc = "Customized StyleGAN3 on PyTorch (リアルタイムプレビュー & Colab デモ版)"
-parser = argparse.ArgumentParser(description=desc)
-parser.add_argument('-o', '--out_dir', default='_out', help='output directory')
-parser.add_argument('-m', '--model', default='models/embryo-stylegan3-r-network-snapshot-000096', help='path to pkl checkpoint file')
-parser.add_argument('-l', '--labels', type=int, default=None, help='labels/categories for conditioning')
-# custom
-parser.add_argument('-s', '--size', default='1280-720', help='Output resolution')
-parser.add_argument('-sc', '--scale_type', default='pad', help="may include pad, side, symm (also centr, fit)")
-parser.add_argument('-lm', '--latmask', default=None, help='external mask file (or directory) for multi latent blending')
-parser.add_argument('-n', '--nXY', default='1-1', help='multi latent frame split count by X (width) and Y (height)')
-parser.add_argument('--splitfine', type=float, default=0, help='multi latent frame split edge sharpness (0 = smooth, higher => finer)')
-parser.add_argument('--splitmax', type=int, default=None, help='max count of latents for frame splits (to avoid OOM)')
-parser.add_argument('--trunc', type=float, default=0.9, help='truncation psi 0..1 (lower = stable, higher = various)')
-parser.add_argument('--save_lat', action='store_true', help='save latent vectors to file')
-parser.add_argument('-v', '--verbose', action='store_true')
-parser.add_argument("--noise_seed", type=int, default=3025)
-# animation
-parser.add_argument('-f', '--frames', default='200-25', help='(未使用) total frames to generate, length of interpolation step')
-parser.add_argument("--cubic", action='store_true', help="use cubic splines for smoothing")
-parser.add_argument("--gauss", action='store_true', help="use Gaussian smoothing")
-# transform SG3
-parser.add_argument('-at', "--anim_trans", default=True, action='store_true', help="add translation animation")
-parser.add_argument('-ar', "--anim_rot", default=True, action='store_true', help="add rotation animation")
-parser.add_argument('-sb', '--shiftbase', type=float, default=0.5, help='Shift to the tile center?')
-parser.add_argument('-sm', '--shiftmax',  type=float, default=0.2, help='Random walk around tile center')
-parser.add_argument('--digress', type=float, default=-10, help='distortion technique by Aydao (strength of the effect)')
-#Affine Convertion
-parser.add_argument('-as', '--affine_scale', default='1.0-1.0')
-#Video Setting (通常の動画保存フラグはそのまま残す)
-parser.add_argument('--framerate', default=30)
-parser.add_argument('--prores', action='store_true', help='output video in ProRes format')
-parser.add_argument('--variations', type=int, default=1)
 
-# Colab 用デモフラグ
-parser.add_argument('--colab_demo', action='store_true', help='Colab上でサンプル動作をするモード')
+# ──────────────────────────────
+# ChatGPT API を利用した翻訳関数
+def translate_to_japanese(text):
+    prompt = f"次の英語のテキストを、なるべく元の文体を保ったまま、神秘的な神話テキストとして日本語に翻訳してください:\n\n{text}"
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",  # 必要に応じて変更
+            messages=[
+                {"role": "system", "content": "You are a professional translator."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+        )
+        translated = response["choices"][0]["message"]["content"].strip()
+        return translated
+    except Exception as e:
+        print("翻訳エラー:", e)
+        return "翻訳エラー"
 
-# 新規追加: 無限リアルタイム生成の方式を指定
-parser.add_argument('--method', default='smooth', choices=['smooth', 'random_walk'],
-                    help='smooth: latent_animaを使ったなめらかな無限補間, random_walk: 毎フレーム少し乱数を足す。')
 
-def img_resize_for_cv2(img):
+# ──────────────────────────────
+# 自動改行（単語単位で）のヘルパー関数
+def wrap_text(text, max_width, font, font_scale, thickness):
     """
-    OpenCVウィンドウに表示するときに大きすぎる場合があるので、
-    ウィンドウに収まるように必要なら縮小するための簡易関数。
+    与えられたテキストを、cv2.getTextSize() を用いて max_width (ピクセル) を超えないように
+    単語単位で改行し、行のリストを返します。
+    単一の単語が max_width を超える場合は文字単位で改行します。
     """
-    max_w = 1920
-    max_h = 1080
-    h, w, c = img.shape
-    scale = min(max_w / w, max_h / h, 1.0)
-    if scale < 1.0:
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    return img
+    if not text:
+        return []
 
-def make_out_name(a):
-    def fmt_f(v):
-        return str(v).replace('.', '_')
+    words = text.split(' ')
+    lines = []
+    current_line = ""
+    for word in words:
+        # すでに文字がある場合は半角スペースを追加
+        test_line = current_line + (" " if current_line else "") + word
+        (line_width, _), _ = cv2.getTextSize(test_line, font, font_scale, thickness)
+        if line_width <= max_width:
+            current_line = test_line
+        else:
+            # 現在の行を確定
+            if current_line:
+                lines.append(current_line)
+                current_line = word
+            else:
+                # 単一の単語が max_width を超える場合：文字単位で改行
+                sub_line = ""
+                for char in word:
+                    test_sub_line = sub_line + char
+                    (sub_line_width, _), _ = cv2.getTextSize(test_sub_line, font, font_scale, thickness)
+                    if sub_line_width <= max_width:
+                        sub_line = test_sub_line
+                    else:
+                        lines.append(sub_line)
+                        sub_line = char
+                current_line = sub_line
+    if current_line:
+        lines.append(current_line)
+    return lines
 
-    model_name = basename(a.model)
 
-    out_name = f"{model_name}_seed{a.noise_seed}"
+# ──────────────────────────────
+# GPT による英語テキスト生成＋翻訳スレッド
+def gpt_text_generator(model_path, prompt, max_new_tokens, context_length,
+                       device, display_time=5.0, clear_time=0.5):
+    global current_text
 
-    if a.size is not None:
-        out_name += f"_size{a.size[1]}x{a.size[0]}"
+    tokenizer = tiktoken.get_encoding('gpt2')
+    checkpoint = torch.load(model_path, map_location=device)
+    state_dict = {key.replace("_orig_mod.", ""): value
+                  for key, value in checkpoint['model_state_dict'].items()}
+    config = checkpoint['config']
 
-    out_name += f"_nXY{a.nXY}"
-    out_name += f"_frames{a.frames}"
-    out_name += f"_trunc{fmt_f(a.trunc)}"
-    if a.cubic:
-        out_name += "_cubic"
-    if a.gauss:
-        out_name += "_gauss"
-    if a.anim_trans:
-        out_name += "_at"
-    if a.anim_rot:
-        out_name += "_ar"
-    out_name += f"_sb{fmt_f(a.shiftbase)}"
-    out_name += f"_sm{fmt_f(a.shiftmax)}"
-    out_name += f"_digress{fmt_f(a.digress)}"
-    if a.affine_scale is not None and a.affine_scale != [1.0, 1.0]:
-        out_name += "_affine"
-        out_name += f"_s{fmt_f(a.affine_scale[0])}-{fmt_f(a.affine_scale[1])}"
-    out_name += f"_fps{a.framerate}"
+    model = GPT(
+        vocab_size=config['vocab_size'],
+        d_model=config['d_model'],
+        n_heads=config['n_heads'],
+        n_layers=config['n_layers'],
+        context_length=context_length,
+        tokenizer=tokenizer
+    ).to(device)
+    model.load_state_dict(state_dict)
+    model.eval()
 
-    return out_name
-
-def checkout(output, i, out_dir):
-    """
-    1枚ずつファイルに保存したい場合に使う関数。
-    """
-    ext = 'png' if output.shape[3] == 4 else 'jpg'
-    filename = osp.join(out_dir, "%06d.%s" % (i, ext))
-    imsave(filename, output[0], quality=95)
-
-# =============================================
-# 1) スムース (latent_anima) を無限に返すジェネレータ
-# =============================================
-def infinite_latent_smooth(z_dim, device, cubic=False, gauss=False, seed=None,
-                           chunk_size=30, uniform=False):
-    """
-    latent_anima を使って「2つの潜在ベクトル間を補間するフレームをchunk_size生成」→
-    次の区間へ移るときに新しいランダム潜在ベクトルを用意→… と繰り返し、
-    無限に潜在ベクトルをyieldするジェネレータ。
-    """
-    rng = np.random.RandomState(seed) if seed is not None else np.random
-    lat1 = rng.randn(z_dim)
     while True:
-        lat2 = rng.randn(z_dim)
-        key_latents = np.stack([lat1, lat2], axis=0)  # (2, z_dim)
+        input_ids = torch.tensor(tokenizer.encode(prompt), dtype=torch.long, device=device).unsqueeze(0)
+        with torch.no_grad():
+            generated = model.generate(input_ids, max_new_tokens=max_new_tokens)[0]
 
-        # latent_anima で chunk_size 個分の補間を生成
-        # transit=chunk_size, frames=chunk_size, loop=False → 1区間分を単純slerp or cubic
-        latents_np = latent_anima(
-            shape=(z_dim,),
-            frames=chunk_size,
-            transit=chunk_size,
-            key_latents=key_latents,
-            somehot=None,
-            smooth=0.5,
-            uniform=uniform,  # Trueにすると lerp, Falseにすると slerp
-            cubic=cubic,
-            gauss=gauss,
-            seed=None,
-            start_lat=None,
-            loop=False,
-            verbose=False
-        )  # shape=(chunk_size, z_dim)
+        if isinstance(generated, str):
+            en_text = generated
+        else:
+            if isinstance(generated, torch.Tensor):
+                generated = generated.tolist()
+            if isinstance(generated, (list, tuple)) and all(isinstance(token, int) for token in generated):
+                en_text = tokenizer.decode(generated)
+            else:
+                en_text = str(generated)
 
-        # 今区間で生成されたフレームを1つずつyield
-        for i in range(len(latents_np)):
-            yield torch.from_numpy(latents_np[i]).unsqueeze(0).to(device)  # (1, z_dim)
-        # 次のループでは lat2 から 新しいlat3 へ補間
-        lat1 = lat2
+        ja_text = translate_to_japanese(en_text)
+
+        with text_lock:
+            current_text = {"en": en_text, "ja": ja_text}
+
+        time.sleep(display_time)
+        with text_lock:
+            current_text = {"en": "", "ja": ""}
+        time.sleep(clear_time)
 
 
-# =============================================
-# 2) ランダムウォークで無限に返すジェネレータ
-# =============================================
-def infinite_latent_random_walk(z_dim, device, seed=None, step_size=0.02):
-    """
-    毎フレーム、前回の潜在ベクトルに少しだけ乱数を加えて更新する。
-    ピクピク動きやすいが簡単。
-    """
-    rng = np.random.RandomState(seed) if seed is not None else np.random
-    z_prev = rng.randn(z_dim)  # 初期
-    while True:
-        # 乱数を加えて更新 (ランダムウォーク)
-        z_prev = z_prev + rng.randn(z_dim) * step_size
-        yield torch.from_numpy(z_prev).unsqueeze(0).to(device)
-
-
-# =============================================
-# 3) 実際にリアルタイムプレビューする関数
-# =============================================
-def generate_realtime_local(a, noise_seed):
-    """
-    こちらが無限リアルタイム生成 + OpenCV表示を行う本体。
-    --method smooth か --method random_walk でモードを切り替える。
-    """
-
+# ──────────────────────────────
+# StyleGAN3 によるフレーム生成スレッド
+def stylegan_frame_generator(frame_queue, stop_event, config_args):
+    device = torch.device(config_args.get("stylegan_gpu", "cuda:0"))
+    noise_seed = config_args.get("noise_seed", 3025)
     torch.manual_seed(noise_seed)
     np.random.seed(noise_seed)
     random.seed(noise_seed)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    os.makedirs(a.out_dir, exist_ok=True)
+    os.makedirs(config_args.get("out_dir", "_out"), exist_ok=True)
 
-    # ネットワーク読み込み --------------------------------
     Gs_kwargs = dnnlib.EasyDict()
-    Gs_kwargs.verbose = a.verbose
-    Gs_kwargs.size = a.size
-    Gs_kwargs.scale_type = a.scale_type
+    Gs_kwargs.verbose = config_args.get("verbose", False)
+    Gs_kwargs.size = config_args.get("size", [720, 1280])
+    Gs_kwargs.scale_type = config_args.get("scale_type", "pad")
 
-    # mask/blend latents with external latmask or by splitting the frame
-    if a.latmask is None:
-        nHW = [int(s) for s in a.nXY.split('-')][::-1]
-        assert len(nHW)==2, ' Wrong count nXY: %d (must be 2)' % len(nHW)
-        n_mult = nHW[0] * nHW[1]
-        if a.splitmax is not None: n_mult = min(n_mult, a.splitmax)
-        Gs_kwargs.countHW = nHW
-        Gs_kwargs.splitfine = a.splitfine
-        if a.splitmax is not None: Gs_kwargs.splitmax = a.splitmax
-        if a.verbose is True and n_mult > 1: print(' Latent blending w/split frame %d x %d' % (nHW[1], nHW[0]))
-        lmask = [None]
+    nxy = config_args.get("nXY", "1-1")
+    nHW = [int(s) for s in nxy.split('-')][::-1]
+    Gs_kwargs.countHW = nHW
+    Gs_kwargs.splitfine = config_args.get("splitfine", 0)
 
-    else:
-        n_mult = 2
-        nHW = [1,1]
-        if osp.isfile(a.latmask): # single file
-            lmask = np.asarray([[img_read(a.latmask)[:,:,0] / 255.]]) # [1,1,h,w]
-        elif osp.isdir(a.latmask): # directory with frame sequence
-            lmask = np.expand_dims(np.asarray([img_read(f)[:,:,0] / 255. for f in img_list(a.latmask)]), 1) # [n,1,h,w]
-        else:
-            print(' !! Blending mask not found:', a.latmask); exit(1)
-        if a.verbose is True: print(' Latent blending with mask', a.latmask, lmask.shape)
-        lmask = np.concatenate((lmask, 1 - lmask), 1) # [n,2,h,w]
-        lmask = torch.from_numpy(lmask).to(device)
-
-    pkl_name = osp.splitext(a.model)[0]
-    if '.pkl' in a.model.lower():
-        custom = False
-        print(' .. Gs from pkl ..', basename(a.model))
-    else:
-        custom = True
-        print(' .. Gs custom ..', basename(a.model))
-
-    rot = True if ('-r-' in a.model.lower() or 'sg3r-' in a.model.lower()) else False
+    model_path = config_args.get("model", "models/embryo-stylegan3-r-network-snapshot-000096")
+    pkl_name = os.path.splitext(model_path)[0]
+    custom = False if '.pkl' in model_path.lower() else True
     with dnnlib.util.open_url(pkl_name + '.pkl') as f:
+        rot = True if ('-r-' in model_path.lower() or 'sg3r-' in model_path.lower()) else False
         Gs = legacy.load_network_pkl(f, custom=custom, rot=rot, **Gs_kwargs)['G_ema'].to(device)
 
     z_dim = Gs.z_dim
     c_dim = Gs.c_dim
+    label = torch.zeros([1, c_dim], device=device) if c_dim > 0 else None
 
-    # ラベル（条件付け）
-    if c_dim > 0 and a.labels is not None:
-        label = torch.zeros([1, c_dim], device=device)
-        label_idx = min(int(a.labels), c_dim - 1)
-        label[0, label_idx] = 1
+    method = config_args.get("method", "smooth")
+    if method == "random_walk":
+        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=0.02)
     else:
-        label = None
+        latent_gen = infinite_latent_smooth(z_dim=z_dim, device=device,
+                                            cubic=config_args.get("cubic", False),
+                                            gauss=config_args.get("gauss", False),
+                                            seed=noise_seed,
+                                            chunk_size=60,
+                                            uniform=False)
+    while not stop_event.is_set():
+        z_current = next(latent_gen)
+        with torch.no_grad():
+            if custom and hasattr(Gs.synthesis, 'input'):
+                trans_param = (torch.zeros([1, 2], device=device),
+                               torch.zeros([1, 1], device=device),
+                               torch.ones([1, 2], device=device))
+                out = Gs(z_current, label, None, trans_param, torch.zeros(1, device=device),
+                         truncation_psi=config_args.get("trunc", 0.9), noise_mode='const')
+            else:
+                out = Gs(z_current, label, None, truncation_psi=config_args.get("trunc", 0.9), noise_mode='const')
+        out = (out.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        out_np = out[0].cpu().numpy()[..., ::-1]
+        frame_queue.put(out_np)
 
-    # NEW SG3
-    if hasattr(Gs.synthesis, 'input'): # SG3
-        if a.anim_trans is True:
-            hw_centers = [np.linspace(-1+1/n, 1-1/n, n) for n in nHW]
-            yy,xx = np.meshgrid(*hw_centers)
-            xscale = [s / Gs.img_resolution for s in a.size]
-            hw_centers = np.dstack((yy.flatten()[:n_mult], xx.flatten()[:n_mult])) * xscale * 0.5 * a.shiftbase
-            hw_scales = np.array([2. / n for n in nHW]) * a.shiftmax
-            shifts = latent_anima((n_mult, 2), a.frames, a.fstep, uniform=True, cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, verbose=False) # [frm,X,2]
-            shifts = hw_centers + (shifts - 0.5) * hw_scales
+
+# ──────────────────────────────
+# 二段組（上：英語、下：日本語）のテキストオーバーレイ描画
+def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2,
+                          font=cv2.FONT_HERSHEY_SIMPLEX, color=(255, 255, 255)):
+    frame_h, frame_w = frame.shape[:2]
+    max_text_width = int(frame_w * 0.9)
+
+    en_lines = wrap_text(texts.get("en", ""), max_text_width, font, font_scale, thickness)
+    ja_lines = wrap_text(texts.get("ja", ""), max_text_width, font, font_scale, thickness)
+
+    gap = 5
+    def get_block_height(lines):
+        h_total = 0
+        for line in lines:
+            (_, line_h), _ = cv2.getTextSize(line, font, font_scale, thickness)
+            h_total += line_h + gap
+        return h_total - gap if lines else 0
+
+    en_block_h = get_block_height(en_lines)
+    ja_block_h = get_block_height(ja_lines)
+
+    top_region_center = frame_h // 4
+    bottom_region_center = frame_h * 3 // 4
+
+    en_y0 = top_region_center - en_block_h // 2
+    ja_y0 = bottom_region_center - ja_block_h // 2
+
+    def draw_lines(lines, y0):
+        y = y0
+        for line in lines:
+            (line_w, line_h), _ = cv2.getTextSize(line, font, font_scale, thickness)
+            x = (frame_w - line_w) // 2
+            cv2.putText(frame, line, (x, y), font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+            cv2.putText(frame, line, (x, y), font, font_scale, color, thickness, cv2.LINE_AA)
+            y += line_h + gap
+
+    draw_lines(en_lines, en_y0)
+    draw_lines(ja_lines, ja_y0)
+    return frame
+
+
+# ──────────────────────────────
+# Click オプション（StyleGAN3 用パラメータは config/config.py の STYLEGAN_CONFIG をデフォルト値に）
+@click.command()
+@click.option('--out-dir', type=str, default=STYLEGAN_CONFIG['out_dir'], help="output directory")
+@click.option('--model', type=str, default=STYLEGAN_CONFIG['model'], help="path to pkl checkpoint file")
+@click.option('--labels', type=int, default=STYLEGAN_CONFIG['labels'], help="labels/categories for conditioning")
+@click.option('--size', type=str, default=STYLEGAN_CONFIG['size'], help="Output resolution (e.g., 1280-720)")
+@click.option('--scale-type', type=str, default=STYLEGAN_CONFIG['scale_type'], help="Scale type")
+@click.option('--latmask', type=str, default=STYLEGAN_CONFIG['latmask'], help="external mask file or directory")
+@click.option('--nxy', type=str, default=STYLEGAN_CONFIG['nXY'], help="multi latent frame split count by X and Y")
+@click.option('--splitfine', type=float, default=STYLEGAN_CONFIG['splitfine'], help="split edge sharpness")
+@click.option('--splitmax', type=int, default=STYLEGAN_CONFIG['splitmax'], help="max count of latents for frame splits")
+@click.option('--trunc', type=float, default=STYLEGAN_CONFIG['trunc'], help="truncation psi")
+@click.option('--save_lat', is_flag=True, default=STYLEGAN_CONFIG['save_lat'], help="save latent vectors to file")
+@click.option('--verbose', is_flag=True, default=STYLEGAN_CONFIG['verbose'], help="verbose output")
+@click.option('--noise_seed', type=int, default=STYLEGAN_CONFIG['noise_seed'], help="noise seed")
+# Animation 関連
+@click.option('--frames', type=str, default=STYLEGAN_CONFIG['frames'], help="total frames and interpolation step (e.g., 200-25)")
+@click.option('--cubic', is_flag=True, default=STYLEGAN_CONFIG['cubic'], help="use cubic splines for smoothing")
+@click.option('--gauss', is_flag=True, default=STYLEGAN_CONFIG['gauss'], help="use Gaussian smoothing")
+# Transform SG3 関連
+@click.option('--anim_trans', is_flag=True, default=STYLEGAN_CONFIG['anim_trans'], help="add translation animation")
+@click.option('--anim_rot', is_flag=True, default=STYLEGAN_CONFIG['anim_rot'], help="add rotation animation")
+@click.option('--shiftbase', type=float, default=STYLEGAN_CONFIG['shiftbase'], help="shift to the tile center")
+@click.option('--shiftmax', type=float, default=STYLEGAN_CONFIG['shiftmax'], help="random walk around tile center")
+@click.option('--digress', type=float, default=STYLEGAN_CONFIG['digress'], help="distortion strength")
+# Affine Conversion
+@click.option('--affine_scale', type=str, default=STYLEGAN_CONFIG['affine_scale'], help="affine scale (e.g., 1.0-1.0)")
+# Video setting
+@click.option('--framerate', type=int, default=STYLEGAN_CONFIG['framerate'], help="frame rate")
+@click.option('--prores', is_flag=True, default=STYLEGAN_CONFIG['prores'], help="output video in ProRes format")
+@click.option('--variations', type=int, default=STYLEGAN_CONFIG['variations'], help="number of variations")
+# 無限生成方式
+@click.option('--method', type=click.Choice(["smooth", "random_walk"]), default=STYLEGAN_CONFIG['method'], help="infinite realtime generation method")
+# GPT 用オプション（以前と同様）
+@click.option('--gpt-model', type=str, default="./models/gpt_model_epoch_16000.pth", help="GPT model checkpoint path")
+@click.option('--gpt-prompt', type=str, default="I'm praying: ", help="GPT generation prompt")
+@click.option('--max-new-tokens', type=int, default=50, help="maximum new tokens for GPT")
+@click.option('--context-length', type=int, default=512, help="GPT context length")
+@click.option('--gpt-gpu', type=str, default="cuda:1", help="GPU for GPT")
+@click.option('--display-time', type=float, default=5.0, help="display time for generated text (seconds)")
+@click.option('--clear-time', type=float, default=0.5, help="clear time for text (seconds)")
+def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
+        save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
+        shiftmax, digress, affine_scale, framerate, prores, variations, method,
+        gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time):
+    """
+    StyleGAN3 によるリアルタイム映像生成と GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
+    映像上に英語（上半分）と日本語訳（下半分）でオーバーレイ表示します。
+    """
+    # size, affine_scale の文字列をパース（例："1280-720" → [720,1280]、"1.0-1.0" → [1.0, 1.0]）
+    try:
+        if "x" in size:
+            h, w = size.split("x")
+        elif "X" in size:
+            h, w = size.split("X")
+        elif "," in size:
+            h, w = size.split(",")
         else:
-            shifts = np.zeros((1, n_mult, 2))
-        if a.anim_rot is True:
-            angles = latent_anima((n_mult, 1), a.frames, a.frames//4, uniform=True, cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, verbose=False) # [frm,X,1]
-            angles = (angles - 0.5) * 180.
+            raise ValueError("Invalid size format")
+        size_parsed = [int(h), int(w)]
+    except Exception as e:
+        print("サイズのパースに失敗しました。例: 720x1280 の形式で指定してください。")
+        raise e
+
+    try:
+        if "-" in affine_scale:
+            a, b = affine_scale.split("-")
+            affine_parsed = [float(a), float(b)]
         else:
-            angles = np.zeros((1, n_mult, 1))
-        # 拡大率 (scale_x, scale_y) を各フレームに反映
-        # ここでは a.affine_scale = [scale_y, scale_x] を想定し、全フレーム同一値にしています
-        # (毎フレームアニメさせたい場合は latent_anima 等で生成してもOK)
-        scale_array = np.array([a.affine_scale[0], a.affine_scale[1]], dtype=np.float32)  # (scale_y, scale_x)
-        # shifts.shape = [frame_count, n_mult, 2]
-        # angles.shape = [frame_count, n_mult, 1]
-        #  → 同じフレーム数・枚数に合わせて scale_array をタイル展開
-        scales = np.tile(scale_array, (shifts.shape[0], shifts.shape[1], 1))  # [frame_count, n_mult, 2]
+            affine_parsed = [1.0, 1.0]
+    except Exception as e:
+        print("affine_scale のパースに失敗しました。例: 1.0-1.0 の形式で指定してください。")
+        raise e
 
-        shifts = torch.from_numpy(shifts).to(device)
-        angles = torch.from_numpy(angles).to(device)
-        scales = torch.from_numpy(scales).to(device)   # [frame_count, X, 2]
+    # StyleGAN3 用設定辞書の作成（CLI の値で上書き）
+    config_args = {
+        "out_dir": out_dir,
+        "model": model,
+        "labels": labels,
+        "size": size_parsed,
+        "scale_type": scale_type,
+        "latmask": latmask,
+        "nXY": nxy,
+        "splitfine": splitfine,
+        "splitmax": splitmax,
+        "trunc": trunc,
+        "save_lat": save_lat,
+        "verbose": verbose,
+        "noise_seed": noise_seed,
+        "frames": frames,
+        "cubic": cubic,
+        "gauss": gauss,
+        "anim_trans": anim_trans,
+        "anim_rot": anim_rot,
+        "shiftbase": shiftbase,
+        "shiftmax": shiftmax,
+        "digress": digress,
+        "affine_scale": affine_parsed,
+        "framerate": framerate,
+        "prores": prores,
+        "variations": variations,
+        "method": method,
+        "stylegan_gpu": "cuda:0"  # StyleGAN3 は固定で GPU0 を利用（必要に応じて変更）
+    }
 
-        trans_params = list(zip(shifts, angles, scales))
-
-    # distort image by tweaking initial const layer
-    first_layer_channels = Gs.synthesis.input.channels
-    first_layer_size     = Gs.synthesis.input.size
-    if isinstance(first_layer_size, (list, tuple, np.ndarray)):
-        h, w = first_layer_size[0], first_layer_size[1]
-    else:
-        h, w = first_layer_size, first_layer_size
-
-    shape_for_dconst = [1, first_layer_channels, h, w]
-    #("debug shape_for_dconst =", shape_for_dconst)
-
-    if a.digress != 0:
-        dconst_list = []
-        for i in range(n_mult):
-            dc_tmp = a.digress * latent_anima(
-                shape_for_dconst,  # [1, 1024, 36, 36] 等
-                a.frames, a.fstep, cubic=True, seed=noise_seed, verbose=False
-            )
-            dconst_list.append(dc_tmp)
-        dconst = np.concatenate(dconst_list, axis=1)
-    else:
-        dconst = np.zeros([latents.shape[0], 1, first_layer_channels, h, w])
-
-    dconst = torch.from_numpy(dconst).to(device).to(torch.float32)
-
-    # 初回ウォームアップ推論
-    with torch.no_grad():
-        if custom and hasattr(Gs.synthesis, 'input'):
-            _ = Gs(torch.randn([1, z_dim], device=device), label, lmask[0],
-                   (torch.zeros([1,2], device=device),
-                    torch.zeros([1,1], device=device),
-                    torch.ones ([1,2], device=device)),
-                   dconst[0], noise_mode='const')
-        else:
-            _ = Gs(torch.randn([1, z_dim], device=device), label, lmask[0],
-                   truncation_psi=a.trunc, noise_mode='const')
-
-    # 1) 生成したフレームを格納するキュー。maxsizeは適当。
     frame_queue = queue.Queue(maxsize=30)
-
-    # 2) スレッド停止用のイベント
     stop_event = threading.Event()
 
-    # どちらのモードで潜在ベクトルを無限生成するか切り替え
-    if a.method == 'random_walk':
-        print("=== Real-time Preview (random_walk mode) ===")
-        latent_gen = infinite_latent_random_walk(
-            z_dim=z_dim, device=device, seed=noise_seed, step_size=0.02
-        )
-    else:
-        print("=== Real-time Preview (smooth latent_anima mode) ===")
-        latent_gen = infinite_latent_smooth(
-            z_dim=z_dim, device=device,
-            cubic=a.cubic, gauss=a.gauss,
-            seed=noise_seed,
-            chunk_size=60,   # 1区間に60フレームで補間 (お好みで)
-            uniform=False    # False→slerp, True→lerp
-        )
+    gan_thread = threading.Thread(target=stylegan_frame_generator,
+                                  args=(frame_queue, stop_event, config_args),
+                                  daemon=True)
+    gan_thread.start()
 
-    # 3) フレーム生成(推論)を行うサブスレッドを定義
-    def producer_thread():
-        frame_idx_local = 0
-        while not stop_event.is_set():
-            # ここで latent を1個取り出して推論
-            z_current = next(latent_gen)
-            latmask   = lmask[frame_idx_local % len(lmask)]
-            dconst_current = dconst[frame_idx % len(dconst)]
+    gpt_device = torch.device(gpt_gpu if torch.cuda.is_available() else "cpu")
+    gpt_thread = threading.Thread(target=gpt_text_generator,
+                                  args=(gpt_model, gpt_prompt, max_new_tokens, context_length,
+                                        gpt_device, display_time, clear_time),
+                                  daemon=True)
+    gpt_thread.start()
 
-            if custom and hasattr(Gs.synthesis, 'input'):
-                trans_param = (
-                    torch.zeros([1,2], device=device),
-                    torch.zeros([1,1], device=device),
-                    torch.ones ([1,2], device=device)
-                )
-            else:
-                trans_param = None
-
-            with torch.no_grad():
-                if custom and hasattr(Gs.synthesis, 'input'):
-                    out = Gs(z_current, label, latmask,
-                             trans_param, dconst_current,
-                             truncation_psi=a.trunc, noise_mode='const')
-                else:
-                    out = Gs(z_current, label, latmask,
-                             truncation_psi=a.trunc, noise_mode='const')
-
-            out = (out.permute(0,2,3,1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
-            out_np = out[0].cpu().numpy()[..., ::-1]  # BGR
-
-            # キューが満杯ならブロックし、空きが出るまで待機
-            frame_queue.put(out_np)
-            frame_idx_local += 1
-
-    # 4) スレッドを起動
-    thread_prod = threading.Thread(target=producer_thread, daemon=True)
-    thread_prod.start()
-
-    print("ウィンドウが表示されます。終了する場合は 'q' キーを押してください。")
-
-    # FPS計測用
+    print("リアルタイムプレビュー開始（'q' キーで終了）")
     fps_count = 0
     t0 = time.time()
 
-    # メインループ (無限)
-    frame_idx = 0
     while True:
-        # 5) バッファから1枚取り出して描画
-        #    producer側でまだフレームが用意できていないときはブロック (待機)
-        out_cv = frame_queue.get()
+        frame = frame_queue.get()
+        with text_lock:
+            texts = current_text.copy()
+        frame_with_text = overlay_text_on_frame(frame.copy(), texts, font_scale=1.0, thickness=2)
+        frame_with_text = img_resize_for_cv2(frame_with_text)
+        cv2.imshow("StyleGAN3 + GPT Overlay", frame_with_text)
 
-        # OpenCVで表示
-        out_cv = img_resize_for_cv2(out_cv)
-        cv2.imshow("StyleGAN3 Real-time Preview", out_cv)
-
-        # FPS計測
         fps_count += 1
         elapsed = time.time() - t0
-        if elapsed >= 1.0:  # 1秒ごとに更新
-            fps = fps_count / elapsed
-            # 同じ行に上書き表示 ("\r" で行頭に戻り、print(..., end='')
-            print(f"\r{fps:.2f} fps", end='')
+        if elapsed >= 1.0:
+            print(f"\r{fps_count / elapsed:.2f} fps", end="")
             sys.stdout.flush()
             t0 = time.time()
             fps_count = 0
@@ -411,55 +399,8 @@ def generate_realtime_local(a, noise_seed):
             stop_event.set()
             break
 
-        frame_idx += 1
-
     cv2.destroyAllWindows()
 
-def generate_colab_demo(a, noise_seed):
-    """
-    Colab上で短いループを回して画像をノートブックセルに表示し続けるサンプルモード。
-    こちらはオフライン(バッチ)想定でフレーム数決め打ち、ループ再生する。
-    """
-    print("=== Colab デモ開始 ===")
-    print("(こちらは従来のフレーム固定デモです)")
-
-    # 必要最低限だけネットワーク読み込み (簡略)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    pkl_name = osp.splitext(a.model)[0]
-    with dnnlib.util.open_url(pkl_name + '.pkl') as f:
-        Gs = legacy.load_network_pkl(f)['G_ema'].to(device)
-
-    frames = 30
-    for i in range(frames):
-        z = torch.randn([1, Gs.z_dim], device=device)
-        with torch.no_grad():
-            output = Gs(z, None, truncation_psi=a.trunc, noise_mode='const')
-        output = (output.permute(0,2,3,1)*127.5+128).clamp(0,255).to(torch.uint8)
-        out_np = output[0].cpu().numpy()
-        clear_output(wait=True)
-        display(Image.fromarray(out_np, 'RGB'))
-        time.sleep(0.2)
-
-    print("=== Colab デモ終了 ===")
-
-def main():
-    a = parser.parse_args()
-    if a.size is not None:
-        a.size = [int(s) for s in a.size.split('-')][::-1]
-        if len(a.size) == 1: a.size = a.size * 2
-    if a.affine_scale is not None: a.affine_scale = [float(s) for s in a.affine_scale.split('-')][::-1]
-    [a.frames, a.fstep] = [int(s) for s in a.frames.split('-')]
-
-    if a.colab_demo:
-        print("Colabデモモードで起動します (cv2によるリアルタイムウィンドウは使いません)")
-        for i in range(a.variations):
-            generate_colab_demo(a, a.noise_seed + i)
-    else:
-        print("ローカル環境でのリアルタイムプレビューを行います (cv2使用)")
-        # 無限生成プレビュー (smooth or random_walk)
-        for i in range(a.variations):
-            generate_realtime_local(a, a.noise_seed + i)
 
 if __name__ == '__main__':
-    main()
+    cli()
