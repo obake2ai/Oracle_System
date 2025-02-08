@@ -6,11 +6,12 @@ Ubuntu（2 GPU搭載）環境において、StyleGAN3 によるリアルタイ�
 GPT によるテキスト生成＋ChatGPT API翻訳を組み合わせ、
 映像上に英語（上半分）と日本語訳（下半分）の二段組でオーバーレイ表示するサンプルコードです。
 
-※スタイルガン関連の各種パラメータは、config/config.py にまとめてあります。
+※各種パラメータは、config/config.py にまとめてあります。
 """
 
 import os
 import sys
+sys.path.append("/root/Share/Oracle_System/src")
 import time
 import threading
 import queue
