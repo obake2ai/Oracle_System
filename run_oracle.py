@@ -253,7 +253,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
     if hasattr(Gs.synthesis, 'input'):
         first_layer_channels = Gs.synthesis.input.channels
         first_layer_size = Gs.synthesis.input.size
-        if isinstance(first_layer_size, (list, tuple)):
+        if isinstance(first_layer_size, (list, tuple, np.ndarray)):
             h, w = first_layer_size[0], first_layer_size[1]
         else:
             h, w = first_layer_size, first_layer_size
