@@ -18,7 +18,7 @@ from util.llm import GPT
 )
 @click.option(
     '--max-new-tokens',
-    default=500,
+    default=50,
     show_default=True,
     type=int,
     help="生成する最大トークン数"
