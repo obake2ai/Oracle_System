@@ -75,16 +75,12 @@ def wrap_text(text, max_width, font, font_scale, thickness):
     単語単位で改行し、行のリストを返します。
     単一の単語が max_width を超える場合は文字単位で改行します。
     """
-    if not text:
-        return []
-
     words = text.split(' ')
     lines = []
     current_line = ""
     for word in words:
         test_line = current_line + (" " if current_line else "") + word
-        (line_width, _), _ = cv2.getTextSize(test_line, font, font_scale, thickness)
-        if line_width <= max_width:
+        if font.getsize(test_line)[0] <= max_text_width:
             current_line = test_line
         else:
             if current_line:
@@ -94,8 +90,7 @@ def wrap_text(text, max_width, font, font_scale, thickness):
                 sub_line = ""
                 for char in word:
                     test_sub_line = sub_line + char
-                    (sub_line_width, _), _ = cv2.getTextSize(test_sub_line, font, font_scale, thickness)
-                    if sub_line_width <= max_width:
+                    if font.getsize(test_sub_line)[0] <= max_text_width:
                         sub_line = test_sub_line
                     else:
                         lines.append(sub_line)
@@ -333,7 +328,7 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
         current_line = ""
         for word in words:
             test_line = current_line + (" " if current_line else "") + word
-            if draw.textsize(test_line, font=font)[0] <= max_text_width:
+            if if font.getsize(test_line)[0] <= max_text_width:
                 current_line = test_line
             else:
                 if current_line:
@@ -371,7 +366,7 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
     def get_block_height(lines, font):
         h_total = 0
         for line in lines:
-            h_total += draw.textsize(line, font=font)[1] + gap
+            h_total += font.getsize(line)[1] + gap
         return h_total - gap if lines else 0
 
     en_block_h = get_block_height(en_lines, font)
@@ -384,11 +379,9 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
     def draw_lines(lines, y0, font, fill, stroke_fill="black", stroke_width=2):
         y = y0
         for line in lines:
-            line_w, line_h = draw.textsize(line, font=font)
+            line_w, line_h = font.getsize(line)
             x = (frame_w - line_w) // 2
-            # まず縁取り（stroke）を描画
             draw.text((x, y), line, font=font, fill=stroke_fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
-            # その上に本文を描画
             draw.text((x, y), line, font=font, fill=fill)
             y += line_h + gap
 
