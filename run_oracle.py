@@ -26,6 +26,7 @@ import legacy
 import click
 import tiktoken
 import openai
+from PIL import Image, ImageDraw, ImageFont
 
 # API キーは config/api.py からインポート
 from config.api import OPENAI_API_KEY
@@ -258,7 +259,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         else:
             h, w = first_layer_size, first_layer_size
         shape_for_dconst = [1, first_layer_channels, h, w]
-        print("debug shape_for_dconst =", shape_for_dconst)
+        # print("debug shape_for_dconst =", shape_for_dconst)
         if config_args["digress"] != 0:
             dconst_list = []
             for i in range(n_mult):
@@ -317,37 +318,86 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 
 
 # ──────────────────────────────
-# 二段組（上：英語、下：日本語）のテキストオーバーレイ描画
-def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2,
-                          font=cv2.FONT_HERSHEY_SIMPLEX, color=(255,255,255)):
-    frame_h, frame_w = frame.shape[:2]
+# --- 変更後の overlay_text_on_frame 関数 ---
+def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="data/fonts/NotoSansCJK-Regular.ttc", color=(255,255,255)):
+    # BGR -> RGB に変換して PIL Image にする
+    image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(image)
+    frame_w, frame_h = image.size
     max_text_width = int(frame_w * 0.9)
-    en_lines = wrap_text(texts.get("en", ""), max_text_width, font, font_scale, thickness)
-    ja_lines = wrap_text(texts.get("ja", ""), max_text_width, font, font_scale, thickness)
+
+    # PIL 用の自動改行関数
+    def wrap_text_pil(text, font):
+        words = text.split(' ')
+        lines = []
+        current_line = ""
+        for word in words:
+            test_line = current_line + (" " if current_line else "") + word
+            if draw.textsize(test_line, font=font)[0] <= max_text_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                    current_line = word
+                else:
+                    # 単一の単語が長い場合は文字単位で改行
+                    sub_line = ""
+                    for char in word:
+                        test_sub_line = sub_line + char
+                        if draw.textsize(test_sub_line, font=font)[0] <= max_text_width:
+                            sub_line = test_sub_line
+                        else:
+                            lines.append(sub_line)
+                            sub_line = char
+                    current_line = sub_line
+        if current_line:
+            lines.append(current_line)
+        return lines
+
+    # font_scale をもとにフォントサイズを設定（例: 基準 32）
+    font_size = int(32 * font_scale)
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except Exception as e:
+        print("フォント読み込みエラー:", e)
+        font = ImageFont.load_default()
+
+    en_text = texts.get("en", "")
+    ja_text = texts.get("ja", "")
+    en_lines = wrap_text_pil(en_text, font)
+    ja_lines = wrap_text_pil(ja_text, font)
+
     gap = 5
-    def get_block_height(lines):
+    def get_block_height(lines, font):
         h_total = 0
         for line in lines:
-            (_, line_h), _ = cv2.getTextSize(line, font, font_scale, thickness)
-            h_total += line_h + gap
+            h_total += draw.textsize(line, font=font)[1] + gap
         return h_total - gap if lines else 0
-    en_block_h = get_block_height(en_lines)
-    ja_block_h = get_block_height(ja_lines)
+
+    en_block_h = get_block_height(en_lines, font)
+    ja_block_h = get_block_height(ja_lines, font)
     top_region_center = frame_h // 4
     bottom_region_center = frame_h * 3 // 4
     en_y0 = top_region_center - en_block_h // 2
     ja_y0 = bottom_region_center - ja_block_h // 2
-    def draw_lines(lines, y0):
+
+    def draw_lines(lines, y0, font, fill, stroke_fill="black", stroke_width=2):
         y = y0
         for line in lines:
-            (line_w, line_h), _ = cv2.getTextSize(line, font, font_scale, thickness)
+            line_w, line_h = draw.textsize(line, font=font)
             x = (frame_w - line_w) // 2
-            cv2.putText(frame, line, (x, y), font, font_scale, (0,0,0), thickness+2, cv2.LINE_AA)
-            cv2.putText(frame, line, (x, y), font, font_scale, color, thickness, cv2.LINE_AA)
+            # まず縁取り（stroke）を描画
+            draw.text((x, y), line, font=font, fill=stroke_fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
+            # その上に本文を描画
+            draw.text((x, y), line, font=font, fill=fill)
             y += line_h + gap
-    draw_lines(en_lines, en_y0)
-    draw_lines(ja_lines, ja_y0)
-    return frame
+
+    draw_lines(en_lines, en_y0, font, fill=color)
+    draw_lines(ja_lines, ja_y0, font, fill=color)
+
+    # PIL Image -> OpenCV (BGR) に戻す
+    result = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    return result
 
 
 # ──────────────────────────────
@@ -402,13 +452,13 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     """
     try:
         if "-" in size:
-            h, w = size.split("-")
+            w, h = size.split("-")
         elif "x" in size:
-            h, w = size.split("x")
+            w, h = size.split("x")
         elif "X" in size:
-            h, w = size.split("X")
+            w, h = size.split("X")
         elif "," in size:
-            h, w = size.split(",")
+            w, h = size.split(",")
         else:
             raise ValueError("Invalid size format")
         size_parsed = [int(h), int(w)]
