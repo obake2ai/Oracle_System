@@ -18,7 +18,7 @@ from util.llm import GPT
 )
 @click.option(
     '--max-new-tokens',
-    default=50,
+    default=500,
     show_default=True,
     type=int,
     help="生成する最大トークン数"
@@ -69,10 +69,18 @@ def generate_sample(model_path, prompt, max_new_tokens, context_length, device):
 
     # テキスト生成
     with torch.no_grad():
-        generated_ids = model.generate(input_ids, max_new_tokens=max_new_tokens)[0]
+        generated = model.generate(input_ids, max_new_tokens=max_new_tokens)[0]
 
-    # 生成されたトークンをテキストに変換して出力
-    output_text = tokenizer.decode(generated_ids)
+    # 生成結果が既に文字列の場合はそのまま出力、
+    # トークン列の場合はデコードしてテキストに変換
+    if isinstance(generated, str):
+        output_text = generated
+    else:
+        # tensorの場合はリストに変換
+        if isinstance(generated, torch.Tensor):
+            generated = generated.tolist()
+        output_text = tokenizer.decode(generated)
+
     print(output_text)
 
 if __name__ == '__main__':
