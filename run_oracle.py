@@ -258,6 +258,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         else:
             h, w = first_layer_size, first_layer_size
         shape_for_dconst = [1, first_layer_channels, h, w]
+        print("debug shape_for_dconst =", shape_for_dconst)
         if config_args["digress"] != 0:
             dconst_list = []
             for i in range(n_mult):
