@@ -11,6 +11,7 @@ GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
 """
 
 import os
+import os.path as osp
 import sys
 sys.path.append("/root/Share/Oracle_System/src")
 import time
@@ -182,8 +183,17 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         Gs_kwargs.splitfine = config_args["splitfine"]
         lmask = [None]
     else:
-        # latmask 処理（ここでは省略）
-        lmask = None
+        n_mult = 2
+        nHW = [1,1]
+        if osp.isfile(config_args["latmask"]): # single file
+            lmask = np.asarray([[img_read(config_args["latmask"])[:,:,0] / 255.]]) # [1,1,h,w]
+        elif osp.isdir(config_args["latmask"]): # directory with frame sequence
+            lmask = np.expand_dims(np.asarray([img_read(f)[:,:,0] / 255. for f in img_list(config_args["latmask"])]), 1) # [n,1,h,w]
+        else:
+            print(' !! Blending mask not found:', config_args["latmask"]); exit(1)
+        if a.verbose is True: print(' Latent blending with mask', config_args["latmask"], lmask.shape)
+        lmask = np.concatenate((lmask, 1 - lmask), 1) # [n,2,h,w]
+        lmask = torch.from_numpy(lmask).to(device)
 
     # Parse frames と fstep (例："200-25")
     frames_val, fstep_val = [int(x) for x in config_args["frames"].split('-')]
