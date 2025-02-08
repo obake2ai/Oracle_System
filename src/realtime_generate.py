@@ -256,6 +256,12 @@ def generate_realtime_local(a, noise_seed):
     無限リアルタイム生成と OpenCV による表示を行う関数。
     --method で 'smooth'（latent_anima を利用）か 'random_walk' を選択します。
     """
+    import torch
+    import numpy as np
+    import random, os, os.path as osp, cv2, time, sys, queue, threading
+    from util.utilgan import img_read, img_list, latent_anima, basename
+
+    # シードの設定
     torch.manual_seed(noise_seed)
     np.random.seed(noise_seed)
     random.seed(noise_seed)
@@ -264,13 +270,46 @@ def generate_realtime_local(a, noise_seed):
     os.makedirs(a.out_dir, exist_ok=True)
 
     # ネットワーク読み込み用引数
+    import dnnlib
     Gs_kwargs = dnnlib.EasyDict()
     Gs_kwargs.verbose = a.verbose
     Gs_kwargs.size = a.size
     Gs_kwargs.scale_type = a.scale_type
 
-    # （中略）lmask, dconst の準備など
+    # --- マスク(lmask)の設定 ---
+    if a.latmask is None:
+        # マスク指定がない場合：マスクは使わないので [None] とする
+        nHW = [int(s) for s in a.nxy.split('-')][::-1]
+        if len(nHW) != 2:
+            raise ValueError(f"Wrong count nXY: {len(nHW)} (must be 2)")
+        n_mult = nHW[0] * nHW[1]
+        if a.splitmax is not None:
+            n_mult = min(n_mult, a.splitmax)
+        Gs_kwargs.countHW = nHW
+        Gs_kwargs.splitfine = a.splitfine
+        if a.splitmax is not None:
+            Gs_kwargs.splitmax = a.splitmax
+        if a.verbose and n_mult > 1:
+            print(' Latent blending w/split frame %d x %d' % (nHW[1], nHW[0]))
+        lmask = [None]
+    else:
+        # マスク指定がある場合：ファイルまたはディレクトリから読み込む
+        n_mult = 2
+        nHW = [1, 1]
+        if osp.isfile(a.latmask):
+            lmask = np.asarray([[img_read(a.latmask)[:, :, 0] / 255.]])
+        elif osp.isdir(a.latmask):
+            lmask = np.expand_dims(np.asarray([img_read(f)[:, :, 0] / 255. for f in img_list(a.latmask)]), 1)
+        else:
+            print(' !! Blending mask not found:', a.latmask)
+            exit(1)
+        if a.verbose:
+            print(' Latent blending with mask', a.latmask, lmask.shape)
+        lmask = np.concatenate((lmask, 1 - lmask), 1)
+        lmask = torch.from_numpy(lmask).to(device)
+    # --- マスク(lmask)の設定ここまで ---
 
+    # ネットワークのロード
     pkl_name = osp.splitext(a.model)[0]
     if '.pkl' in a.model.lower():
         custom = False
@@ -279,6 +318,7 @@ def generate_realtime_local(a, noise_seed):
         custom = True
         print(' .. Gs custom ..', basename(a.model))
 
+    import legacy
     rot = True if ('-r-' in a.model.lower() or 'sg3r-' in a.model.lower()) else False
     with dnnlib.util.open_url(pkl_name + '.pkl') as f:
         Gs = legacy.load_network_pkl(f, custom=custom, rot=rot, **Gs_kwargs)['G_ema'].to(device)
@@ -293,43 +333,56 @@ def generate_realtime_local(a, noise_seed):
     else:
         label = None
 
-    # 初回ウォームアップ推論（修正済）
+    # --- 初回ウォームアップ推論 ---
     with torch.no_grad():
         if custom and hasattr(Gs.synthesis, 'input'):
-             _ = Gs(
-                 torch.randn([1, z_dim], device=device),
-                 label,
-                 truncation_psi=a.trunc,
-                 noise_mode='const',
-                 latmask=lmask[0],
-                 trans_params=(
-                     torch.zeros([1,2], device=device),
-                     torch.zeros([1,1], device=device),
-                     torch.ones([1,2], device=device)
-                 ),
-                 dconst=dconst[0]
-             )
+            _ = Gs(
+                torch.randn([1, z_dim], device=device),
+                label,
+                truncation_psi=a.trunc,
+                noise_mode='const',
+                latmask=lmask[0],  # lmask はここで必ず定義済み
+                trans_params=(
+                    torch.zeros([1, 2], device=device),
+                    torch.zeros([1, 1], device=device),
+                    torch.ones([1, 2], device=device)
+                ),
+                dconst=torch.zeros(1, device=device)  # ダミーの dconst
+            )
         else:
-             _ = Gs(
-                 torch.randn([1, z_dim], device=device),
-                 label,
-                 truncation_psi=a.trunc,
-                 noise_mode='const',
-                 latmask=lmask[0]
-             )
+            _ = Gs(
+                torch.randn([1, z_dim], device=device),
+                label,
+                truncation_psi=a.trunc,
+                noise_mode='const',
+                latmask=lmask[0]
+            )
+    # --- 初回ウォームアップ推論ここまで ---
 
-    # 生成フレームを格納するキューなどの準備
+    # フレーム生成用キューと停止用イベントの用意
     frame_queue = queue.Queue(maxsize=30)
     stop_event = threading.Event()
 
-    # モードに応じた潜在ベクトル生成ジェネレータの選択（省略）
+    # 潜在ベクトルの無限生成
+    if a.method == 'random_walk':
+        print("=== Real-time Preview (random_walk mode) ===")
+        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=a.noise_seed, step_size=0.02)
+    else:
+        print("=== Real-time Preview (smooth latent_anima mode) ===")
+        latent_gen = infinite_latent_smooth(z_dim=z_dim, device=device, cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, chunk_size=60, uniform=False)
 
+    # --- サブスレッド内で使用する変数 lmask は、外側で定義されているためそのまま参照可能 ---
     def producer_thread():
         frame_idx_local = 0
         while not stop_event.is_set():
             z_current = next(latent_gen)
-            latmask_current = lmask[frame_idx_local % len(lmask)]
-            dconst_current = dconst[frame_idx_local % dconst.shape[0]]
+            # lmask[0] が None の場合はそのまま使用、それ以外の場合はフレーム数に応じてインデックスを決定
+            if lmask[0] is None:
+                latmask_current = None
+            else:
+                latmask_current = lmask[frame_idx_local % len(lmask)]
+            # ここでは dconst もダミーとして torch.zeros を使用（元のコードに合わせて修正してください）
+            dconst_current = torch.zeros(1, device=device)
             if custom and hasattr(Gs.synthesis, 'input'):
                 trans_param = (
                     torch.zeros([1, 2], device=device),
@@ -340,24 +393,25 @@ def generate_realtime_local(a, noise_seed):
                 trans_param = None
             with torch.no_grad():
                 if custom and hasattr(Gs.synthesis, 'input'):
-                     out = Gs(
-                         z_current,
-                         label,
-                         truncation_psi=a.trunc,
-                         noise_mode='const',
-                         latmask=latmask_current,
-                         trans_params=trans_param,
-                         dconst=dconst_current
-                     )
+                    out = Gs(
+                        z_current,
+                        label,
+                        truncation_psi=a.trunc,
+                        noise_mode='const',
+                        latmask=latmask_current,
+                        trans_params=trans_param,
+                        dconst=dconst_current
+                    )
                 else:
-                     out = Gs(
-                         z_current,
-                         label,
-                         truncation_psi=a.trunc,
-                         noise_mode='const',
-                         latmask=latmask_current
-                     )
-            # 出力画像の後処理等（省略）
+                    out = Gs(
+                        z_current,
+                        label,
+                        truncation_psi=a.trunc,
+                        noise_mode='const',
+                        latmask=latmask_current
+                    )
+            out = (out.permute(0,2,3,1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+            out_np = out[0].cpu().numpy()[..., ::-1]
             frame_queue.put(out_np)
             frame_idx_local += 1
 
@@ -367,7 +421,6 @@ def generate_realtime_local(a, noise_seed):
     print("ウィンドウが表示されます。終了する場合は 'q' キーを押してください。")
     fps_count = 0
     t0 = time.time()
-    frame_idx = 0
     while True:
         out_cv = frame_queue.get()
         out_cv = img_resize_for_cv2(out_cv)
@@ -375,8 +428,7 @@ def generate_realtime_local(a, noise_seed):
         fps_count += 1
         elapsed = time.time() - t0
         if elapsed >= 1.0:
-            fps = fps_count / elapsed
-            print(f"\r{fps:.2f} fps", end='')
+            print(f"\r{fps_count / elapsed:.2f} fps", end='')
             sys.stdout.flush()
             t0 = time.time()
             fps_count = 0
@@ -385,8 +437,6 @@ def generate_realtime_local(a, noise_seed):
             print("\n終了します。")
             stop_event.set()
             break
-        frame_idx += 1
-
     cv2.destroyAllWindows()
 
 def generate_colab_demo(a, noise_seed):
