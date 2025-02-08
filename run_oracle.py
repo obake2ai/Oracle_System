@@ -3,15 +3,17 @@
 
 """
 Ubuntu（2 GPU搭載）環境において、StyleGAN3 によるリアルタイム映像生成と
-GPT によるテキスト生成＋ChatGPT API翻訳を組み合わせ、
+GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
 映像上に英語（上半分）と日本語訳（下半分）の二段組でオーバーレイ表示するサンプルコードです。
 
-※各種パラメータは、config/config.py にまとめてあります。
+※StyleGAN3 用の各種設定は、config/config.py の STYLEGAN_CONFIG をデフォルト値として利用し、
+   CLI で上書き可能です。
 """
 
 import os
 import sys
 sys.path.append("/root/Share/Oracle_System/src")
+
 import time
 import threading
 import queue
@@ -26,14 +28,14 @@ import click
 import tiktoken
 import openai
 
-# API キーは config/api.py からインポート
+# API キーは config/api.py からインポート（例: OPENAI_API_KEY）
 from config.api import OPENAI_API_KEY
 openai.api_key = OPENAI_API_KEY
 
-# StyleGAN3 用設定を config/config.py からインポート
+# StyleGAN3 用の設定を config/config.py からインポート
 from config.config import STYLEGAN_CONFIG
 
-# src/realtime_generate.py 内の必要関数
+# src/realtime_generate.py 内の必要関数（循環参照にならないよう注意）
 from src.realtime_generate import infinite_latent_smooth, infinite_latent_random_walk, img_resize_for_cv2
 # GPT 用ローカルモデル（util/llm.py の GPT クラス）
 from util.llm import GPT
@@ -49,7 +51,7 @@ def translate_to_japanese(text):
     prompt = f"次の英語のテキストを、なるべく元の文体を保ったまま、神秘的な神話テキストとして日本語に翻訳してください:\n\n{text}"
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # 必要に応じて変更
+            model="gpt-3.5-turbo",  # 必要に応じて変更してください
             messages=[
                 {"role": "system", "content": "You are a professional translator."},
                 {"role": "user", "content": prompt}
@@ -157,25 +159,22 @@ def gpt_text_generator(model_path, prompt, max_new_tokens, context_length,
 # ──────────────────────────────
 # StyleGAN3 によるフレーム生成スレッド
 def stylegan_frame_generator(frame_queue, stop_event, config_args):
-    device = torch.device(config_args.get("stylegan_gpu", "cuda:0"))
-    noise_seed = config_args.get("noise_seed", 3025)
+    device = torch.device(config_args["stylegan_gpu"])
+    noise_seed = config_args["noise_seed"]
     torch.manual_seed(noise_seed)
     np.random.seed(noise_seed)
     random.seed(noise_seed)
 
-    os.makedirs(config_args.get("out_dir", "_out"), exist_ok=True)
+    os.makedirs(config_args["out_dir"], exist_ok=True)
 
-    Gs_kwargs = dnnlib.EasyDict()
-    Gs_kwargs.verbose = config_args.get("verbose", False)
-    Gs_kwargs.size = config_args.get("size", [720, 1280])
-    Gs_kwargs.scale_type = config_args.get("scale_type", "pad")
+    # STYLEGAN_CONFIG の全内容を Gs_kwargs に引き継ぐ
+    Gs_kwargs = dnnlib.EasyDict(config_args)
+    # キー "nXY" は内部的に変換して "countHW" としてセット
+    if "nXY" in Gs_kwargs:
+        nxy = Gs_kwargs.pop("nXY")
+        Gs_kwargs.countHW = [int(s) for s in nxy.split('-')][::-1]
 
-    nxy = config_args.get("nXY", "1-1")
-    nHW = [int(s) for s in nxy.split('-')][::-1]
-    Gs_kwargs.countHW = nHW
-    Gs_kwargs.splitfine = config_args.get("splitfine", 0)
-
-    model_path = config_args.get("model", "models/embryo-stylegan3-r-network-snapshot-000096")
+    model_path = config_args["model"]
     pkl_name = os.path.splitext(model_path)[0]
     custom = False if '.pkl' in model_path.lower() else True
     with dnnlib.util.open_url(pkl_name + '.pkl') as f:
@@ -186,13 +185,12 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
     c_dim = Gs.c_dim
     label = torch.zeros([1, c_dim], device=device) if c_dim > 0 else None
 
-    method = config_args.get("method", "smooth")
-    if method == "random_walk":
+    if config_args["method"] == "random_walk":
         latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=0.02)
     else:
         latent_gen = infinite_latent_smooth(z_dim=z_dim, device=device,
-                                            cubic=config_args.get("cubic", False),
-                                            gauss=config_args.get("gauss", False),
+                                            cubic=config_args["cubic"],
+                                            gauss=config_args["gauss"],
                                             seed=noise_seed,
                                             chunk_size=60,
                                             uniform=False)
@@ -204,9 +202,9 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
                                torch.zeros([1, 1], device=device),
                                torch.ones([1, 2], device=device))
                 out = Gs(z_current, label, None, trans_param, torch.zeros(1, device=device),
-                         truncation_psi=config_args.get("trunc", 0.9), noise_mode='const')
+                         truncation_psi=config_args["trunc"], noise_mode='const')
             else:
-                out = Gs(z_current, label, None, truncation_psi=config_args.get("trunc", 0.9), noise_mode='const')
+                out = Gs(z_current, label, None, truncation_psi=config_args["trunc"], noise_mode='const')
         out = (out.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
         out_np = out[0].cpu().numpy()[..., ::-1]
         frame_queue.put(out_np)
@@ -287,7 +285,7 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2,
 @click.option('--variations', type=int, default=STYLEGAN_CONFIG['variations'], help="number of variations")
 # 無限生成方式
 @click.option('--method', type=click.Choice(["smooth", "random_walk"]), default=STYLEGAN_CONFIG['method'], help="infinite realtime generation method")
-# GPT 用オプション（以前と同様）
+# GPT 用オプション
 @click.option('--gpt-model', type=str, default="./models/gpt_model_epoch_16000.pth", help="GPT model checkpoint path")
 @click.option('--gpt-prompt', type=str, default="I'm praying: ", help="GPT generation prompt")
 @click.option('--max-new-tokens', type=int, default=50, help="maximum new tokens for GPT")
@@ -303,7 +301,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     StyleGAN3 によるリアルタイム映像生成と GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
     映像上に英語（上半分）と日本語訳（下半分）でオーバーレイ表示します。
     """
-    # size, affine_scale の文字列をパース（例："1280-720" → [720,1280]、"1.0-1.0" → [1.0, 1.0]）
+    # size, affine_scale の文字列をパース（例："1280-720" → [1280,720]、"1.0-1.0" → [1.0, 1.0]）
     try:
         if "x" in size:
             h, w = size.split("x")
@@ -328,7 +326,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         print("affine_scale のパースに失敗しました。例: 1.0-1.0 の形式で指定してください。")
         raise e
 
-    # StyleGAN3 用設定辞書の作成（CLI の値で上書き）
+    # CLI の値で上書きした内容をもとに、StyleGAN3 用設定辞書を作成
     config_args = {
         "out_dir": out_dir,
         "model": model,
