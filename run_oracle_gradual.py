@@ -8,6 +8,9 @@ GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
 
 ※事前に指定行数分のテキストを生成し、logフォルダに日付名のフォルダを作成して出力を保存した後、
 　StyleGAN3 のリアルタイム生成に対して１行ずつオーバーレイ表示します。
+
+※さらに、GPU性能の制約で約10fpsのStyleGAN生成フレームを、前後フレームの遷移（ブレンド）処理により
+　約30fpsに見せるようにしています。なお、この遷移処理は config から --transition/--no-transition オプションで切り替え可能です。
 """
 
 import os
@@ -43,8 +46,10 @@ from src.realtime_generate import infinite_latent_smooth, infinite_latent_random
 # GPT 用モデル
 from util.llm import GPT
 
-# グローバル変数（※もはや並行生成は行わず、事前生成したテキストを利用）
-# ※現状は main loop 内で pre_generated_texts を参照するため global 変数は不要
+# グローバル変数（事前生成テキスト用：main で保持するため、別スレッドは使わない）
+# （元々並行処理していたテキスト生成は事前生成に変更）
+# text_lock はテキスト生成時の排他用として残しておきますが、メインループでは直接参照します。
+text_lock = threading.Lock()
 
 # ──────────────────────────────
 # テキストサイズ計測用
@@ -123,7 +128,7 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
     return generated_lines
 
 # ──────────────────────────────
-# StyleGAN3 によるフレーム生成スレッド
+# StyleGAN3 によるフレーム生成スレッド（従来と同様）
 def stylegan_frame_generator(frame_queue, stop_event, config_args):
     device = torch.device(config_args["stylegan_gpu"])
     noise_seed = config_args["noise_seed"]
@@ -133,7 +138,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 
     os.makedirs(config_args["out_dir"], exist_ok=True)
 
-    # ここでは、StyleGAN3 のネットワーク読み込みに必要なキーのみを抜粋して Gs_kwargs を作成
+    # StyleGAN3 のネットワーク読み込み用パラメータ作成
     Gs_kwargs = dnnlib.EasyDict()
     for key in ["verbose", "size", "scale_type"]:
         Gs_kwargs[key] = config_args[key]
@@ -154,14 +159,14 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         n_mult = 2
         nHW = [1,1]
         if osp.isfile(config_args["latmask"]):  # single file
-            lmask = np.asarray([[img_read(config_args["latmask"])[:,:,0] / 255.]])  # [1,1,h,w]
+            lmask = np.asarray([[img_read(config_args["latmask"])[:,:,0] / 255.]])
         elif osp.isdir(config_args["latmask"]):  # directory with frame sequence
-            lmask = np.expand_dims(np.asarray([img_read(f)[:,:,0] / 255. for f in img_list(config_args["latmask"])]), 1)  # [n,1,h,w]
+            lmask = np.expand_dims(np.asarray([img_read(f)[:,:,0] / 255. for f in img_list(config_args["latmask"])]), 1)
         else:
             print(' !! Blending mask not found:', config_args["latmask"]); exit(1)
         if config_args["verbose"] is True:
             print(' Latent blending with mask', config_args["latmask"], lmask.shape)
-        lmask = np.concatenate((lmask, 1 - lmask), 1)  # [n,2,h,w]
+        lmask = np.concatenate((lmask, 1 - lmask), 1)
         lmask = torch.from_numpy(lmask).to(device)
 
     # Parse frames と fstep (例："200-25")
@@ -186,11 +191,9 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 
     # NEW SG3 の場合、追加の変換パラメータを生成
     if hasattr(Gs.synthesis, 'input'):
-        # 平行移動
         if config_args["anim_trans"]:
             hw_centers = [np.linspace(-1 + 1/n, 1 - 1/n, n) for n in nHW]
             yy, xx = np.meshgrid(*hw_centers)
-            # Gs.img_resolution は画像解像度（正方形の場合）
             xscale = [s / Gs.img_resolution for s in config_args["size"]]
             hw_centers = np.dstack((yy.flatten()[:n_mult], xx.flatten()[:n_mult])) * np.array(xscale) * 0.5 * config_args["shiftbase"]
             hw_scales = np.array([2. / n for n in nHW]) * config_args["shiftmax"]
@@ -200,7 +203,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
             shifts = hw_centers + (shifts - 0.5) * hw_scales
         else:
             shifts = np.zeros((1, n_mult, 2))
-        # 回転
         if config_args["anim_rot"]:
             angles = latent_anima((n_mult, 1), frames_val, frames_val//4, uniform=True,
                                   cubic=config_args["cubic"], gauss=config_args["gauss"],
@@ -208,8 +210,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
             angles = (angles - 0.5) * 180.
         else:
             angles = np.zeros((1, n_mult, 1))
-        # 拡大率（affine_scale は [scale_y, scale_x] としてパース済み）
-        scale_array = np.array(config_args["affine_scale"], dtype=np.float32)  # (scale_y, scale_x)
+        scale_array = np.array(config_args["affine_scale"], dtype=np.float32)
         scales = np.tile(scale_array, (shifts.shape[0], shifts.shape[1], 1))
         shifts = torch.from_numpy(shifts).to(device)
         angles = torch.from_numpy(angles).to(device)
@@ -218,7 +219,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
     else:
         trans_params = None
 
-    # 歪み（digress）の計算
     if hasattr(Gs.synthesis, 'input'):
         first_layer_channels = Gs.synthesis.input.channels
         first_layer_size = Gs.synthesis.input.size
@@ -240,7 +240,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
     else:
         dconst = None
 
-    # 初回ウォームアップ推論
     with torch.no_grad():
         if custom and hasattr(Gs.synthesis, 'input'):
             dummy_trans_param = (torch.zeros([1,2], device=device),
@@ -252,10 +251,8 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
             _ = Gs(torch.randn([1, z_dim], device=device), label,
                    truncation_psi=config_args["trunc"], noise_mode='const')
 
-    # メインループ
     frame_idx_local = 0
     frame_idx = 0
-    # latent 生成モードの選択
     if config_args["method"] == "random_walk":
         latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=0.02)
     else:
@@ -283,15 +280,74 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         frame_idx += 1
 
 # ──────────────────────────────
+# 中間フレームを生成する関数（軽量なベクトル演算によるブレンド）
+# def generate_transition_frame(frame_a, frame_b, t):
+#     """
+#     frame_a, frame_b: uint8 の numpy 配列（H×W×3）
+#     t: 0～1 の補間パラメータ。t=0 のとき frame_a、t=1 で frame_b となる。
+#
+#     線形補間に加え、乗算ブレンド（t*(1-t) が最大となる t=0.5 付近で効果が現れる）を加味して、
+#     粒子感のある印象の中間フレームを生成します。
+#     """
+#     fa = frame_a.astype(np.float32)
+#     fb = frame_b.astype(np.float32)
+#     linear_blend = (1 - t) * fa + t * fb
+#     multiply_blend = (fa * fb) / 255.0
+#     # t*(1-t)*4 は t=0.5 で最大1.0となる（0または1では効果ゼロ）
+#     alpha_val = t * (1 - t) * 4
+#     result = (1 - alpha_val) * linear_blend + alpha_val * multiply_blend
+#     result = np.clip(result, 0, 255).astype(np.uint8)
+#     return result
+
+def generate_transition_frame(frame_a, frame_b, t):
+    """
+    frame_a, frame_b: uint8 の numpy 配列（H×W×3）
+    t: 0～1 の補間パラメータ。t=0 のとき frame_a、t=1 のとき frame_b
+
+    ※全体の線形補間と乗算ブレンドに加え、frame_b の明るさ（白さ）をマスクとして利用し、
+      白い部分では乱数による粒状な効果を付与して、粒子的な融合効果を演出します。
+    """
+    # 入力フレームを float32 に変換
+    fa = frame_a.astype(np.float32)
+    fb = frame_b.astype(np.float32)
+
+    # 線形補間 (通常のフェード)
+    linear_blend = (1 - t) * fa + t * fb
+
+    # 乗算ブレンド（各ピクセルの掛け算による融合）
+    multiply_blend = (fa * fb) / 255.0
+
+    # frame_b の明るさ（0～1）を各ピクセルについて算出
+    # ※各チャネルの平均値で評価します（RGB が高ければ白に近いと判断）
+    brightness = np.mean(fb, axis=2, keepdims=True) / 255.0
+
+    # 白さマスクの生成: 例えば、70%以上の明るさを白とみなし、70%未満は0、70～100%で線形に 0～1 に変換
+    whiteness = np.clip((brightness - 0.7) / 0.3, 0, 1)
+
+    # 各ピクセルに対する乱数（グレイン効果用）
+    noise = np.random.uniform(0, 1, size=whiteness.shape)
+
+    # t による基本のブレンド効果（t*(1-t)*4 は t=0.5 で最大値 1.0）
+    base_alpha = t * (1 - t) * 4
+
+    # 白い部分であれば、乱数のばらつきと白さマスクにより、ブレンド効果（α）が強くなるように調整
+    # ※ここでは、0.5～1.0 の範囲に乱数と白さを掛け合わせた倍率を適用
+    alpha = base_alpha * (0.5 + 0.5 * whiteness * (0.5 + 0.5 * noise))
+    alpha = np.clip(alpha, 0, 1)  # 念のため [0,1] にクリップ
+
+    # 最終的なブレンド結果：線形補間と乗算ブレンドを、ピクセルごとの α で重み付け合成
+    result = (1 - alpha) * linear_blend + alpha * multiply_blend
+    result = np.clip(result, 0, 255).astype(np.uint8)
+    return result
+
+# ──────────────────────────────
 # --- 変更後の overlay_text_on_frame 関数 ---
 def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGAN_CONFIG['font_path'], color=STYLEGAN_CONFIG['font_color']):
-    # BGR -> RGB に変換して PIL Image にする
     image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(image)
     frame_w, frame_h = image.size
     max_text_width = int(frame_w * 0.9)
 
-    # PIL 用の自動改行関数
     def wrap_text_pil(text, font):
         words = text.split(' ')
         lines = []
@@ -305,7 +361,6 @@ def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGA
                     lines.append(current_line)
                     current_line = word
                 else:
-                    # 単一の単語が長い場合は文字単位で改行
                     sub_line = ""
                     for char in word:
                         test_sub_line = sub_line + char
@@ -319,7 +374,6 @@ def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGA
             lines.append(current_line)
         return lines
 
-    # font_scale をもとにフォントサイズを設定（例: 基準 32）
     font_size = int(32 * font_scale)
     try:
         font = ImageFont.truetype(font_path, font_size)
@@ -358,7 +412,6 @@ def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGA
     draw_lines(en_lines, en_y0, font, fill=color)
     draw_lines(ja_lines, ja_y0, font, fill=color)
 
-    # PIL Image -> OpenCV (BGR) に戻す
     result = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     return result
 
@@ -409,20 +462,21 @@ def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGA
 @click.option('--font-thickness', type=int, default=STYLEGAN_CONFIG['default_font_thickness'], help="default font thickness for overlay text")
 # 事前生成するテキスト行数
 @click.option('--text-lines', type=int, default=10, help="Number of text lines to pre-generate")
-
+# フレーム間トランジション処理のオン/オフ（デフォルトはオン）
+@click.option('--transition/--no-transition', default=True, help="Enable transition interpolation for smoother frame rate (simulate 30fps)")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time,
-        font_scale, font_thickness, text_lines):
+        font_scale, font_thickness, text_lines, transition):
     """
     StyleGAN3 によるリアルタイム映像生成と、事前に GPT により生成・翻訳したテキストを組み合わせ、
     映像上に英語（上半分）と日本語訳（下半分）でオーバーレイ表示します。
 
     起動時に指定行数分のテキストを生成し、log フォルダに日付名のフォルダを作成して出力を保存します。
-    テキストは１行ずつ表示し、最終行表示後は最初の行に戻ってループ表示します。
+    また、GPU の制約により StyleGAN の生成フレームは約10fpsですが、前後フレームのブレンドにより
+    中間フレームを生成して約30fpsに見せるアニメーション遷移処理を、--transition/--no-transition で指定できます。
     """
-    # サイズのパース
     try:
         if "-" in size:
             w, h = size.split("-")
@@ -439,7 +493,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         print("サイズのパースに失敗しました。例: 720x1280 の形式で指定してください。")
         raise e
 
-    # affine_scale のパース
     try:
         if "-" in affine_scale:
             a, b = affine_scale.split("-")
@@ -504,19 +557,44 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     gan_thread.start()
 
     print("リアルタイムプレビュー開始（'q' キーで終了）")
-    fps_count = 0
-    t0 = time.time()
+    # ここからフレーム表示ループ（遷移処理を組み込む）
+    # 初回フレーム取得（blocking）
+    curr_frame = frame_queue.get()
+    prev_frame = curr_frame.copy()
+    last_frame_update = time.time()
+    # 表示間隔：約33ms（30fps）
+    display_interval_ms = 33
+    # StyleGAN3 のフレーム間隔（10fps → 0.1秒）
+    stylegan_interval = 0.1
 
-    # テキスト表示用の変数：表示中か非表示か・現在のインデックス・最終更新時刻
+    # テキスト表示用の変数
     current_text_idx = 0
     text_visible = True
     last_text_change = time.time()
 
     while True:
-        frame = frame_queue.get()
+        # 新フレームがあれば非blockingでキューから更新
+        try:
+            while True:
+                new_frame = frame_queue.get_nowait()
+                prev_frame = curr_frame.copy()
+                curr_frame = new_frame
+                last_frame_update = time.time()
+        except queue.Empty:
+            pass
 
+        # 補間パラメータ t を計算（0～1）
+        t = (time.time() - last_frame_update) / stylegan_interval
+        if t > 1:
+            t = 1.0
+
+        if transition:
+            disp_frame = generate_transition_frame(prev_frame, curr_frame, t)
+        else:
+            disp_frame = curr_frame
+
+        # テキスト表示のオン／オフの切替（display_time, clear_time に基づく）
         now = time.time()
-        # 表示時間（display_time 秒間表示）後、テキストをクリアし、clear_time 経過後に次行へ
         if text_visible and now - last_text_change >= display_time:
             text_visible = False
             last_text_change = now
@@ -530,19 +608,11 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         else:
             texts = {"en": "", "ja": ""}
 
-        frame_with_text = overlay_text_on_frame(frame.copy(), texts, font_scale, font_thickness)
+        frame_with_text = overlay_text_on_frame(disp_frame.copy(), texts, font_scale, font_thickness)
         frame_with_text = img_resize_for_cv2(frame_with_text)
         cv2.imshow("StyleGAN3 + GPT Overlay", frame_with_text)
 
-        fps_count += 1
-        elapsed = time.time() - t0
-        if elapsed >= 1.0:
-            print(f"\r{fps_count / elapsed:.2f} fps", end="")
-            sys.stdout.flush()
-            t0 = time.time()
-            fps_count = 0
-
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(display_interval_ms) & 0xFF
         if key == ord('q'):
             print("\n終了します。")
             stop_event.set()
