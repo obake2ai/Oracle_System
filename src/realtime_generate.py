@@ -35,7 +35,7 @@ torch.backends.cudnn.benchmark = True
 @click.command()
 @click.option("-o", "--out_dir", default="_out", show_default=True,
               help="出力先ディレクトリ")
-@click.option("-m", "--model", default="models/ffhq-1024.pkl", show_default=True,
+@click.option("-m", "--model", default="models/embryo-stylegan3-r-network-snapshot-000096.pkl", show_default=True,
               help="pkl チェックポイントファイルのパス")
 @click.option("-l", "--labels", type=int, default=None,
               help="条件付け用のラベル（カテゴリ番号）")
