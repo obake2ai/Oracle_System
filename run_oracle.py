@@ -166,7 +166,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 
     # ここでは、StyleGAN3 のネットワーク読み込みに必要なキーのみを抜粋して Gs_kwargs を作成
     Gs_kwargs = dnnlib.EasyDict()
-    for key in ["verbose", "size", "scale_type", "cubic", "gauss"]:
+    for key in ["verbose", "size", "scale_type"]:
         Gs_kwargs[key] = config_args[key]
 
     # latmask の有無で latent blending 用パラメータを設定
