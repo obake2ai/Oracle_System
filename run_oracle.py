@@ -50,7 +50,7 @@ text_lock = threading.Lock()
 def translate_to_japanese(text):
     prompt = f"次の英語のテキストを、なるべく元の文体を保ったまま、神秘的な神話テキストとして日本語に翻訳してください。出力は翻訳結果の見返してください。:\n\n{text}"
     try:
-        response = openai.ChatCompletion.create(
+        response = openai.chat.completions.create(
             model="gpt-4o",  # 必要に応じて変更してください
             messages=[
                 {"role": "system", "content": "You are a professional translator."},
@@ -58,7 +58,7 @@ def translate_to_japanese(text):
             ],
             temperature=0.7,
         )
-        translated = response["choices"][0]["message"]["content"].strip()
+        translated = response.choices[0].message.content.strip()
         return translated
     except Exception as e:
         print("翻訳エラー:", e)
