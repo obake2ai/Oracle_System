@@ -1,36 +1,79 @@
-import math
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
+import click
 import tiktoken
 from util.llm import GPT
 
-tokenizer = tiktoken.get_encoding('gpt2')
-context_length = 512
+@click.command()
+@click.option(
+    '--model-path',
+    default="./models/gpt_model_epoch_16000.pth",
+    show_default=True,
+    help="モデルのチェックポイントファイルのパス"
+)
+@click.option(
+    '--prompt',
+    default="I'm praying: ",
+    show_default=True,
+    help="生成の起点となるプロンプト"
+)
+@click.option(
+    '--max-new-tokens',
+    default=50,
+    show_default=True,
+    type=int,
+    help="生成する最大トークン数"
+)
+@click.option(
+    '--context-length',
+    default=512,
+    show_default=True,
+    type=int,
+    help="モデルのコンテキスト長"
+)
+@click.option(
+    '--device',
+    default="cuda",
+    show_default=True,
+    help="推論に使用するデバイス（'cuda'または'cpu'）"
+)
+def generate_sample(model_path, prompt, max_new_tokens, context_length, device):
+    """
+    指定したチェックポイントからGPTモデルをロードし、テキスト生成を行います。
+    """
+    # トークナイザの読み込み (gpt2のエンコーディング)
+    tokenizer = tiktoken.get_encoding('gpt2')
 
-def generate_sample():
-      # number of tokens processed in a single batch
+    # チェックポイントの読み込み
+    checkpoint = torch.load(model_path, map_location=device)
+    state_dict = {
+        key.replace("_orig_mod.", ""): value
+        for key, value in checkpoint['model_state_dict'].items()
+    }
 
-    load_path = "./models/gpt_model_epoch_16000.pth"  # 保存時のファイル名に合わせる
-    checkpoint = torch.load(load_path, map_location='cuda')
-    state_dict = {key.replace("_orig_mod.", ""): value for key, value in checkpoint['model_state_dict'].items()}
-
-    loaded_model = GPT(
-        vocab_size=checkpoint['config']['vocab_size'],
-        d_model=checkpoint['config']['d_model'],
-        n_heads=checkpoint['config']['n_heads'],
-        n_layers=checkpoint['config']['n_layers'],
+    # モデルの初期化（チェックポイントのconfigを利用）
+    config = checkpoint['config']
+    model = GPT(
+        vocab_size=config['vocab_size'],
+        d_model=config['d_model'],
+        n_heads=config['n_heads'],
+        n_layers=config['n_layers'],
         context_length=context_length,
         tokenizer=tokenizer
-        ).to('cuda')
+    ).to(device)
 
-    loaded_model.load_state_dict(state_dict)
-    loaded_model.eval()
+    model.load_state_dict(state_dict)
+    model.eval()
 
+    # 入力プロンプトのエンコード
+    input_ids = torch.tensor(tokenizer.encode(prompt), dtype=torch.long, device=device).unsqueeze(0)
+
+    # テキスト生成
     with torch.no_grad():
-        input = torch.tensor(tokenizer.encode("I'm praying: "), dtype=torch.long, device='cuda').unsqueeze(0)
-        print(loaded_model.generate(input, max_new_tokens=500)[0])
+        generated_ids = model.generate(input_ids, max_new_tokens=max_new_tokens)[0]
+
+    # 生成されたトークンをテキストに変換して出力
+    output_text = tokenizer.decode(generated_ids)
+    print(output_text)
 
 if __name__ == '__main__':
     generate_sample()
