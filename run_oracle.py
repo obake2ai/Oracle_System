@@ -47,6 +47,13 @@ current_text = {"en": "", "ja": ""}
 text_lock = threading.Lock()
 
 
+def get_text_size(font, text):
+    # font.getbbox(text) returns (x0, y0, x1, y1)
+    bbox = font.getbbox(text)
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+    return (width, height)
+
 # ──────────────────────────────
 # ChatGPT API を利用した翻訳関数
 def translate_to_japanese(text):
@@ -80,7 +87,7 @@ def wrap_text(text, max_width, font, font_scale, thickness):
     current_line = ""
     for word in words:
         test_line = current_line + (" " if current_line else "") + word
-        if font.getsize(test_line)[0] <= max_text_width:
+        if get_text_size(font, test_line)[0] <= max_text_width:
             current_line = test_line
         else:
             if current_line:
@@ -328,7 +335,7 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
         current_line = ""
         for word in words:
             test_line = current_line + (" " if current_line else "") + word
-            if font.getsize(test_line)[0] <= max_text_width:
+            if get_text_size(font, test_line)[0] <= max_text_width:
                 current_line = test_line
             else:
                 if current_line:
@@ -366,7 +373,7 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
     def get_block_height(lines, font):
         h_total = 0
         for line in lines:
-            h_total += font.getsize(line)[1] + gap
+            h_total += get_text_size(font, line)[1] + gap
         return h_total - gap if lines else 0
 
     en_block_h = get_block_height(en_lines, font)
@@ -379,7 +386,7 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
     def draw_lines(lines, y0, font, fill, stroke_fill="black", stroke_width=2):
         y = y0
         for line in lines:
-            line_w, line_h = font.getsize(line)
+            line_w, line_h = get_text_size(font, line)
             x = (frame_w - line_w) // 2
             draw.text((x, y), line, font=font, fill=stroke_fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
             draw.text((x, y), line, font=font, fill=fill)
