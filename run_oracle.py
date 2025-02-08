@@ -328,7 +328,7 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
         current_line = ""
         for word in words:
             test_line = current_line + (" " if current_line else "") + word
-            if if font.getsize(test_line)[0] <= max_text_width:
+            if font.getsize(test_line)[0] <= max_text_width:
                 current_line = test_line
             else:
                 if current_line:
