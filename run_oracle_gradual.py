@@ -302,43 +302,38 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 def generate_transition_frame(frame_a, frame_b, t):
     """
     frame_a, frame_b: uint8 の numpy 配列（H×W×3）
-    t: 0～1 の補間パラメータ。t=0 のとき frame_a、t=1 のとき frame_b
+    t: 0～1 の補間パラメータ（t=0 で frame_a、t=1 で frame_b）
 
-    ※全体の線形補間と乗算ブレンドに加え、frame_b の明るさ（白さ）をマスクとして利用し、
-      白い部分では乱数による粒状な効果を付与して、粒子的な融合効果を演出します。
+    ※白い部分に対して粒子的な融合効果を強調するため、frame_b の明るさ（白さ）に基づくマスク
+      と乱数を用いて、ブレンド係数を各ピクセルごとに調整します。
     """
-    # 入力フレームを float32 に変換
+    # float32 に変換
     fa = frame_a.astype(np.float32)
     fb = frame_b.astype(np.float32)
 
-    # 線形補間 (通常のフェード)
+    # 通常の線形補間
     linear_blend = (1 - t) * fa + t * fb
-
-    # 乗算ブレンド（各ピクセルの掛け算による融合）
+    # 乗算ブレンド
     multiply_blend = (fa * fb) / 255.0
 
-    # frame_b の明るさ（0～1）を各ピクセルについて算出
-    # ※各チャネルの平均値で評価します（RGB が高ければ白に近いと判断）
+    # frame_b の明るさを算出（RGB 平均で評価）
     brightness = np.mean(fb, axis=2, keepdims=True) / 255.0
+    # 白さマスク：閾値を 0.6 に下げ、0.6～1.0 で線形に 0～1 にマッピング
+    whiteness = np.clip((brightness - 0.6) / 0.4, 0, 1)
 
-    # 白さマスクの生成: 例えば、70%以上の明るさを白とみなし、70%未満は0、70～100%で線形に 0～1 に変換
-    whiteness = np.clip((brightness - 0.7) / 0.3, 0, 1)
-
-    # 各ピクセルに対する乱数（グレイン効果用）
+    # 各ピクセルごとに一様乱数（粒状効果用）
     noise = np.random.uniform(0, 1, size=whiteness.shape)
 
-    # t による基本のブレンド効果（t*(1-t)*4 は t=0.5 で最大値 1.0）
+    # 基本のブレンド係数（t*(1-t)*4 は t=0.5 で 1.0 となる）
     base_alpha = t * (1 - t) * 4
+    # 白い部分では、乱数の影響と白さマスクでブレンド効果を強調
+    # ※ここでは乱数の寄与と白さを大きめにして、効果が目立つようにしています
+    alpha = base_alpha * (0.5 + 0.8 * whiteness * (0.5 + 0.5 * noise))
+    alpha = np.clip(alpha, 0, 1)
 
-    # 白い部分であれば、乱数のばらつきと白さマスクにより、ブレンド効果（α）が強くなるように調整
-    # ※ここでは、0.5～1.0 の範囲に乱数と白さを掛け合わせた倍率を適用
-    alpha = base_alpha * (0.5 + 0.5 * whiteness * (0.5 + 0.5 * noise))
-    alpha = np.clip(alpha, 0, 1)  # 念のため [0,1] にクリップ
-
-    # 最終的なブレンド結果：線形補間と乗算ブレンドを、ピクセルごとの α で重み付け合成
+    # 線形補間と乗算ブレンドを、ピクセルごとの α で合成
     result = (1 - alpha) * linear_blend + alpha * multiply_blend
-    result = np.clip(result, 0, 255).astype(np.uint8)
-    return result
+    return np.clip(result, 0, 255).astype(np.uint8)
 
 # ──────────────────────────────
 # --- 変更後の overlay_text_on_frame 関数 ---
@@ -558,6 +553,8 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
     print("リアルタイムプレビュー開始（'q' キーで終了）")
     # ここからフレーム表示ループ（遷移処理を組み込む）
+    fps_count = 0
+    t0 = time.time()
     # 初回フレーム取得（blocking）
     curr_frame = frame_queue.get()
     prev_frame = curr_frame.copy()
@@ -611,6 +608,14 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         frame_with_text = overlay_text_on_frame(disp_frame.copy(), texts, font_scale, font_thickness)
         frame_with_text = img_resize_for_cv2(frame_with_text)
         cv2.imshow("StyleGAN3 + GPT Overlay", frame_with_text)
+
+        fps_count += 1
+        elapsed = time.time() - t0
+        if elapsed >= 1.0:
+            print(f"\r{fps_count / elapsed:.2f} fps", end="")
+            sys.stdout.flush()
+            t0 = time.time()
+            fps_count = 0
 
         key = cv2.waitKey(display_interval_ms) & 0xFF
         if key == ord('q'):
