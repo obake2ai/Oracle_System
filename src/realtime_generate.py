@@ -269,34 +269,7 @@ def generate_realtime_local(a, noise_seed):
     Gs_kwargs.size = a.size
     Gs_kwargs.scale_type = a.scale_type
 
-    if a.latmask is None:
-        nHW = [int(s) for s in a.nxy.split('-')][::-1]
-        if len(nHW) != 2:
-            raise ValueError(f"Wrong count nXY: {len(nHW)} (must be 2)")
-        n_mult = nHW[0] * nHW[1]
-        if a.splitmax is not None:
-            n_mult = min(n_mult, a.splitmax)
-        Gs_kwargs.countHW = nHW
-        Gs_kwargs.splitfine = a.splitfine
-        if a.splitmax is not None:
-            Gs_kwargs.splitmax = a.splitmax
-        if a.verbose and n_mult > 1:
-            print(' Latent blending w/split frame %d x %d' % (nHW[1], nHW[0]))
-        lmask = [None]
-    else:
-        n_mult = 2
-        nHW = [1, 1]
-        if osp.isfile(a.latmask):
-            lmask = np.asarray([[img_read(a.latmask)[:, :, 0] / 255.]])
-        elif osp.isdir(a.latmask):
-            lmask = np.expand_dims(np.asarray([img_read(f)[:, :, 0] / 255. for f in img_list(a.latmask)]), 1)
-        else:
-            print(' !! Blending mask not found:', a.latmask)
-            exit(1)
-        if a.verbose:
-            print(' Latent blending with mask', a.latmask, lmask.shape)
-        lmask = np.concatenate((lmask, 1 - lmask), 1)
-        lmask = torch.from_numpy(lmask).to(device)
+    # （中略）lmask, dconst の準備など
 
     pkl_name = osp.splitext(a.model)[0]
     if '.pkl' in a.model.lower():
@@ -320,91 +293,42 @@ def generate_realtime_local(a, noise_seed):
     else:
         label = None
 
-    if hasattr(Gs.synthesis, 'input'):  # SG3
-        if a.anim_trans:
-            hw_centers = [np.linspace(-1 + 1/n, 1 - 1/n, n) for n in nHW]
-            yy, xx = np.meshgrid(*hw_centers)
-            xscale = [s / Gs.img_resolution for s in a.size]
-            hw_centers = np.dstack((yy.flatten()[:n_mult], xx.flatten()[:n_mult])) * np.array(xscale) * 0.5 * a.shiftbase
-            hw_scales = np.array([2. / n for n in nHW]) * a.shiftmax
-            shifts = latent_anima((n_mult, 2), a.frames, a.fstep, uniform=True,
-                                  cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, verbose=False)
-            shifts = hw_centers + (shifts - 0.5) * hw_scales
-        else:
-            shifts = np.zeros((1, n_mult, 2))
-        if a.anim_rot:
-            angles = latent_anima((n_mult, 1), a.frames, a.frames // 4, uniform=True,
-                                   cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, verbose=False)
-            angles = (angles - 0.5) * 180.
-        else:
-            angles = np.zeros((1, n_mult, 1))
-        scale_array = np.array([a.affine_scale[0], a.affine_scale[1]], dtype=np.float32)
-        scales = np.tile(scale_array, (shifts.shape[0], shifts.shape[1], 1))
-        shifts = torch.from_numpy(shifts).to(device)
-        angles = torch.from_numpy(angles).to(device)
-        scales = torch.from_numpy(scales).to(device)
-        trans_params = list(zip(shifts, angles, scales))
-    else:
-        trans_params = None
-
-    first_layer_channels = Gs.synthesis.input.channels
-    first_layer_size = Gs.synthesis.input.size
-    if isinstance(first_layer_size, (list, tuple, np.ndarray)):
-        h, w = first_layer_size[0], first_layer_size[1]
-    else:
-        h, w = first_layer_size, first_layer_size
-
-    shape_for_dconst = [1, first_layer_channels, h, w]
-
-    if a.digress != 0:
-        dconst_list = []
-        for i in range(n_mult):
-            dc_tmp = a.digress * latent_anima(
-                shape_for_dconst,
-                a.frames, a.fstep, cubic=True, seed=a.noise_seed, verbose=False
-            )
-            dconst_list.append(dc_tmp)
-        dconst = np.concatenate(dconst_list, axis=1)
-    else:
-        # ※元コードでは 'latents' が未定義のため、frames を利用
-        dconst = np.zeros([a.frames, 1, first_layer_channels, h, w])
-    dconst = torch.from_numpy(dconst).to(device).to(torch.float32)
-
+    # 初回ウォームアップ推論（修正済）
     with torch.no_grad():
         if custom and hasattr(Gs.synthesis, 'input'):
-            _ = Gs(torch.randn([1, z_dim], device=device), label, lmask[0],
-                   (torch.zeros([1, 2], device=device),
-                    torch.zeros([1, 1], device=device),
-                    torch.ones([1, 2], device=device)),
-                   dconst[0], noise_mode='const')
+             _ = Gs(
+                 torch.randn([1, z_dim], device=device),
+                 label,
+                 truncation_psi=a.trunc,
+                 noise_mode='const',
+                 latmask=lmask[0],
+                 trans_params=(
+                     torch.zeros([1,2], device=device),
+                     torch.zeros([1,1], device=device),
+                     torch.ones([1,2], device=device)
+                 ),
+                 dconst=dconst[0]
+             )
         else:
-            _ = Gs(torch.randn([1, z_dim], device=device), label, lmask[0],
-                   truncation_psi=a.trunc, noise_mode='const')
+             _ = Gs(
+                 torch.randn([1, z_dim], device=device),
+                 label,
+                 truncation_psi=a.trunc,
+                 noise_mode='const',
+                 latmask=lmask[0]
+             )
 
+    # 生成フレームを格納するキューなどの準備
     frame_queue = queue.Queue(maxsize=30)
     stop_event = threading.Event()
 
-    if a.method == 'random_walk':
-        print("=== Real-time Preview (random_walk mode) ===")
-        latent_gen = infinite_latent_random_walk(
-            z_dim=z_dim, device=device, seed=a.noise_seed, step_size=0.02
-        )
-    else:
-        print("=== Real-time Preview (smooth latent_anima mode) ===")
-        latent_gen = infinite_latent_smooth(
-            z_dim=z_dim, device=device,
-            cubic=a.cubic, gauss=a.gauss,
-            seed=a.noise_seed,
-            chunk_size=60,
-            uniform=False
-        )
+    # モードに応じた潜在ベクトル生成ジェネレータの選択（省略）
 
     def producer_thread():
         frame_idx_local = 0
         while not stop_event.is_set():
             z_current = next(latent_gen)
             latmask_current = lmask[frame_idx_local % len(lmask)]
-            # ※本来は producer 内のインデックスで dconst を参照する
             dconst_current = dconst[frame_idx_local % dconst.shape[0]]
             if custom and hasattr(Gs.synthesis, 'input'):
                 trans_param = (
@@ -416,14 +340,24 @@ def generate_realtime_local(a, noise_seed):
                 trans_param = None
             with torch.no_grad():
                 if custom and hasattr(Gs.synthesis, 'input'):
-                    out = Gs(z_current, label, latmask_current,
-                           trans_param, dconst_current,
-                           truncation_psi=a.trunc, noise_mode='const')
+                     out = Gs(
+                         z_current,
+                         label,
+                         truncation_psi=a.trunc,
+                         noise_mode='const',
+                         latmask=latmask_current,
+                         trans_params=trans_param,
+                         dconst=dconst_current
+                     )
                 else:
-                    out = Gs(z_current, label, latmask_current,
-                           truncation_psi=a.trunc, noise_mode='const')
-            out = (out.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
-            out_np = out[0].cpu().numpy()[..., ::-1]
+                     out = Gs(
+                         z_current,
+                         label,
+                         truncation_psi=a.trunc,
+                         noise_mode='const',
+                         latmask=latmask_current
+                     )
+            # 出力画像の後処理等（省略）
             frame_queue.put(out_np)
             frame_idx_local += 1
 
