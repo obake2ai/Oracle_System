@@ -12,6 +12,7 @@ GPT によるテキスト生成を組み合わせたプレビューを行うサ�
 
 import os
 import sys
+sys.path.append("/root/Share/Oracle_System/src")
 import time
 import threading
 import queue
