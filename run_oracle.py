@@ -40,23 +40,18 @@ text_lock = threading.Lock()
 # ── GPT によるテキスト生成スレッド ──
 def gpt_text_generator(model_path, prompt, max_new_tokens, context_length,
                        device, display_time=5.0, clear_time=0.5):
-    """
-    GPT モデルを読み込み、指定のプロンプトからテキストを生成して、
-    display_time 秒間表示後、clear_time 秒間テキストをクリアする処理をループします。
-    """
     global current_text
 
-    # tiktoken を用いて GPT-2 のエンコーディングを読み込み
+    # tiktoken を用いて GPT-2 のエンコーディングを取得
     tokenizer = tiktoken.get_encoding('gpt2')
 
     # チェックポイントの読み込み
     checkpoint = torch.load(model_path, map_location=device)
-    # キー名のプレフィックスを除去
     state_dict = {key.replace("_orig_mod.", ""): value
                   for key, value in checkpoint['model_state_dict'].items()}
     config = checkpoint['config']
 
-    # GPT モデルの初期化（config の値を利用）
+    # GPT モデルの初期化
     model = GPT(
         vocab_size=config['vocab_size'],
         d_model=config['d_model'],
@@ -69,25 +64,33 @@ def gpt_text_generator(model_path, prompt, max_new_tokens, context_length,
     model.eval()
 
     while True:
-        # プロンプトをエンコードしてテキスト生成
+        # プロンプトのエンコード
         input_ids = torch.tensor(tokenizer.encode(prompt), dtype=torch.long, device=device).unsqueeze(0)
         with torch.no_grad():
             generated = model.generate(input_ids, max_new_tokens=max_new_tokens)[0]
-        if isinstance(generated, torch.Tensor):
-            generated = generated.tolist()
-        output_text = tokenizer.decode(generated)
 
-        # 生成されたテキストをグローバル変数にセット（排他制御）
+        # 生成結果の型によって分岐
+        if isinstance(generated, str):
+            # すでに文字列の場合はそのまま出力
+            output_text = generated
+        else:
+            # もしテンソルならリストに変換
+            if isinstance(generated, torch.Tensor):
+                generated = generated.tolist()
+            # もし整数のリストであれば、デコードを行う
+            if isinstance(generated, (list, tuple)) and all(isinstance(token, int) for token in generated):
+                output_text = tokenizer.decode(generated)
+            else:
+                # 万が一、想定外の型の場合は文字列化
+                output_text = str(generated)
+
         with text_lock:
             current_text = output_text
 
-        # display_time 秒間テキストを表示
         time.sleep(display_time)
-        # クリアして空文字をセット（clear_time 秒間）
         with text_lock:
             current_text = ""
         time.sleep(clear_time)
-
 
 # ── StyleGAN3 によるフレーム生成スレッド ──
 def stylegan_frame_generator(frame_queue, stop_event, config_args):
