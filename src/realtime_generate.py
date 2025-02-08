@@ -256,12 +256,11 @@ def generate_realtime_local(a, noise_seed):
     無限リアルタイム生成と OpenCV による表示を行う関数。
     --method で 'smooth'（latent_anima を利用）か 'random_walk' を選択します。
     """
-    import torch
-    import numpy as np
-    import random, os, os.path as osp, cv2, time, sys, queue, threading
+    import torch, numpy as np, random, os, os.path as osp, cv2, time, sys, queue, threading
     from util.utilgan import img_read, img_list, latent_anima, basename
+    import dnnlib, legacy
 
-    # シードの設定
+    # シード設定
     torch.manual_seed(noise_seed)
     np.random.seed(noise_seed)
     random.seed(noise_seed)
@@ -270,7 +269,6 @@ def generate_realtime_local(a, noise_seed):
     os.makedirs(a.out_dir, exist_ok=True)
 
     # ネットワーク読み込み用引数
-    import dnnlib
     Gs_kwargs = dnnlib.EasyDict()
     Gs_kwargs.verbose = a.verbose
     Gs_kwargs.size = a.size
@@ -278,7 +276,6 @@ def generate_realtime_local(a, noise_seed):
 
     # --- マスク(lmask)の設定 ---
     if a.latmask is None:
-        # マスク指定がない場合：マスクは使わないので [None] とする
         nHW = [int(s) for s in a.nxy.split('-')][::-1]
         if len(nHW) != 2:
             raise ValueError(f"Wrong count nXY: {len(nHW)} (must be 2)")
@@ -293,7 +290,6 @@ def generate_realtime_local(a, noise_seed):
             print(' Latent blending w/split frame %d x %d' % (nHW[1], nHW[0]))
         lmask = [None]
     else:
-        # マスク指定がある場合：ファイルまたはディレクトリから読み込む
         n_mult = 2
         nHW = [1, 1]
         if osp.isfile(a.latmask):
@@ -307,9 +303,8 @@ def generate_realtime_local(a, noise_seed):
             print(' Latent blending with mask', a.latmask, lmask.shape)
         lmask = np.concatenate((lmask, 1 - lmask), 1)
         lmask = torch.from_numpy(lmask).to(device)
-    # --- マスク(lmask)の設定ここまで ---
+    # --- マスク設定ここまで ---
 
-    # ネットワークのロード
     pkl_name = osp.splitext(a.model)[0]
     if '.pkl' in a.model.lower():
         custom = False
@@ -318,7 +313,6 @@ def generate_realtime_local(a, noise_seed):
         custom = True
         print(' .. Gs custom ..', basename(a.model))
 
-    import legacy
     rot = True if ('-r-' in a.model.lower() or 'sg3r-' in a.model.lower()) else False
     with dnnlib.util.open_url(pkl_name + '.pkl') as f:
         Gs = legacy.load_network_pkl(f, custom=custom, rot=rot, **Gs_kwargs)['G_ema'].to(device)
@@ -336,34 +330,31 @@ def generate_realtime_local(a, noise_seed):
     # --- 初回ウォームアップ推論 ---
     with torch.no_grad():
         if custom and hasattr(Gs.synthesis, 'input'):
+            # カスタムモデルの場合は位置引数で渡す
             _ = Gs(
                 torch.randn([1, z_dim], device=device),
                 label,
-                truncation_psi=a.trunc,
-                noise_mode='const',
-                latmask=lmask[0],  # lmask はここで必ず定義済み
-                trans_params=(
-                    torch.zeros([1, 2], device=device),
-                    torch.zeros([1, 1], device=device),
-                    torch.ones([1, 2], device=device)
-                ),
-                dconst=torch.zeros(1, device=device)  # ダミーの dconst
+                lmask[0],
+                (torch.zeros([1,2], device=device),
+                 torch.zeros([1,1], device=device),
+                 torch.ones([1,2], device=device)),
+                torch.zeros(1, device=device),  # ここは元コードに合わせた dconst[0] の値
+                noise_mode='const'
             )
         else:
             _ = Gs(
                 torch.randn([1, z_dim], device=device),
                 label,
+                lmask[0],
                 truncation_psi=a.trunc,
-                noise_mode='const',
-                latmask=lmask[0]
+                noise_mode='const'
             )
-    # --- 初回ウォームアップ推論ここまで ---
+    # --- 初回ウォームアップここまで ---
 
-    # フレーム生成用キューと停止用イベントの用意
     frame_queue = queue.Queue(maxsize=30)
     stop_event = threading.Event()
 
-    # 潜在ベクトルの無限生成
+    # 潜在ベクトル生成（関数は省略、元コードの infinite_latent_smooth / random_walk を使用）
     if a.method == 'random_walk':
         print("=== Real-time Preview (random_walk mode) ===")
         latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=a.noise_seed, step_size=0.02)
@@ -371,17 +362,15 @@ def generate_realtime_local(a, noise_seed):
         print("=== Real-time Preview (smooth latent_anima mode) ===")
         latent_gen = infinite_latent_smooth(z_dim=z_dim, device=device, cubic=a.cubic, gauss=a.gauss, seed=a.noise_seed, chunk_size=60, uniform=False)
 
-    # --- サブスレッド内で使用する変数 lmask は、外側で定義されているためそのまま参照可能 ---
     def producer_thread():
         frame_idx_local = 0
         while not stop_event.is_set():
             z_current = next(latent_gen)
-            # lmask[0] が None の場合はそのまま使用、それ以外の場合はフレーム数に応じてインデックスを決定
             if lmask[0] is None:
                 latmask_current = None
             else:
                 latmask_current = lmask[frame_idx_local % len(lmask)]
-            # ここでは dconst もダミーとして torch.zeros を使用（元のコードに合わせて修正してください）
+            # ここでは dconst_current はダミー値として torch.zeros を使用（元コードに合わせて適宜変更してください）
             dconst_current = torch.zeros(1, device=device)
             if custom and hasattr(Gs.synthesis, 'input'):
                 trans_param = (
@@ -396,21 +385,20 @@ def generate_realtime_local(a, noise_seed):
                     out = Gs(
                         z_current,
                         label,
-                        truncation_psi=a.trunc,
-                        noise_mode='const',
-                        latmask=latmask_current,
-                        trans_params=trans_param,
-                        dconst=dconst_current
+                        latmask_current,
+                        trans_param,
+                        dconst_current,
+                        noise_mode='const'
                     )
                 else:
                     out = Gs(
                         z_current,
                         label,
+                        latmask_current,
                         truncation_psi=a.trunc,
-                        noise_mode='const',
-                        latmask=latmask_current
+                        noise_mode='const'
                     )
-            out = (out.permute(0,2,3,1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+            out = (out.permute(0,2,3,1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
             out_np = out[0].cpu().numpy()[..., ::-1]
             frame_queue.put(out_np)
             frame_idx_local += 1
