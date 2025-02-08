@@ -303,7 +303,9 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     """
     # size, affine_scale の文字列をパース（例："1280-720" → [1280,720]、"1.0-1.0" → [1.0, 1.0]）
     try:
-        if "x" in size:
+        if "-" in size:
+            h, w = size.split("-")
+        elif "x" in size:
             h, w = size.split("x")
         elif "X" in size:
             h, w = size.split("X")
@@ -313,7 +315,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             raise ValueError("Invalid size format")
         size_parsed = [int(h), int(w)]
     except Exception as e:
-        print("サイズのパースに失敗しました。例: 720x1280 の形式で指定してください。")
+        print("サイズのパースに失敗しました。例: 720-1280 の形式で指定してください。")
         raise e
 
     try:
