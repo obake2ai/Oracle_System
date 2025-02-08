@@ -32,7 +32,7 @@ parser.add_argument('-o', '--out_dir', default='_out', help='output directory')
 parser.add_argument('-m', '--model', default='models/embryo-stylegan3-r-network-snapshot-000096', help='path to pkl checkpoint file')
 parser.add_argument('-l', '--labels', type=int, default=None, help='labels/categories for conditioning')
 # custom
-parser.add_argument('-s', '--size', default='1920-1080', help='Output resolution')
+parser.add_argument('-s', '--size', default='1280-720', help='Output resolution')
 parser.add_argument('-sc', '--scale_type', default='pad', help="may include pad, side, symm (also centr, fit)")
 parser.add_argument('-lm', '--latmask', default=None, help='external mask file (or directory) for multi latent blending')
 parser.add_argument('-n', '--nXY', default='1-1', help='multi latent frame split count by X (width) and Y (height)')
