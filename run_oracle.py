@@ -321,7 +321,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 
 # ──────────────────────────────
 # --- 変更後の overlay_text_on_frame 関数 ---
-def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="data/fonts/NotoSansCJK-Regular.ttc", color=(255,255,255)):
+def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGAN_CONFIG['font_path'], color=STYLEGAN_CONFIG['font_color']):
     # BGR -> RGB に変換して PIL Image にする
     image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(image)
@@ -435,17 +435,22 @@ def overlay_text_on_frame(frame, texts, font_scale=1.0, thickness=2, font_path="
 # 無限生成方式
 @click.option('--method', type=click.Choice(["smooth", "random_walk"]), default=STYLEGAN_CONFIG['method'], help="infinite realtime generation method")
 # GPT 用オプション
-@click.option('--gpt-model', type=str, default="./models/gpt_model_epoch_16000.pth", help="GPT model checkpoint path")
-@click.option('--gpt-prompt', type=str, default="I'm praying: ", help="GPT generation prompt")
-@click.option('--max-new-tokens', type=int, default=50, help="maximum new tokens for GPT")
-@click.option('--context-length', type=int, default=512, help="GPT context length")
-@click.option('--gpt-gpu', type=str, default="cuda:1", help="GPU for GPT")
-@click.option('--display-time', type=float, default=5.0, help="display time for generated text (seconds)")
-@click.option('--clear-time', type=float, default=0.5, help="clear time for text (seconds)")
+@click.option('--gpt-model', type=str, default=STYLEGAN_CONFIG['gpt_model'], help="GPT model checkpoint path")
+@click.option('--gpt-prompt', type=str, default=STYLEGAN_CONFIG['gpt_prompt'], help="GPT generation prompt")
+@click.option('--max-new-tokens', type=int, default=STYLEGAN_CONFIG['max_new_tokens'], help="maximum new tokens for GPT")
+@click.option('--context-length', type=int, default=STYLEGAN_CONFIG['context_length'], help="GPT context length")
+@click.option('--gpt-gpu', type=str, default=STYLEGAN_CONFIG['gpt_gpu'], help="GPU for GPT")
+@click.option('--display-time', type=float, default=STYLEGAN_CONFIG['display_time'], help="display time for generated text (seconds)")
+@click.option('--clear-time', type=float, default=STYLEGAN_CONFIG['clear_time'], help="clear time for text (seconds)")
+
+@click.option('--font-scale', type=float, default=STYLEGAN_CONFIG['default_font_scale'], help="default font scale for overlay text")
+@click.option('--font-thickness', type=int, default=STYLEGAN_CONFIG['default_font_thickness'], help="default font thickness for overlay text")
+
+
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method,
-        gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time):
+        gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time, font_scale, font_thickness):
     """
     StyleGAN3 によるリアルタイム映像生成と GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
     映像上に英語（上半分）と日本語訳（下半分）でオーバーレイ表示します。
@@ -503,7 +508,9 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         "prores": prores,
         "variations": variations,
         "method": method,
-        "stylegan_gpu": "cuda:0"  # StyleGAN3 は GPU0 を利用
+        "stylegan_gpu": "cuda:0",
+        "font_scale": font_scale,
+        "font_thickness": font_thickness
     }
 
     frame_queue = queue.Queue(maxsize=30)
@@ -529,7 +536,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         frame = frame_queue.get()
         with text_lock:
             texts = current_text.copy()
-        frame_with_text = overlay_text_on_frame(frame.copy(), texts, font_scale=1.0, thickness=2)
+        frame_with_text = overlay_text_on_frame(frame.copy(), texts, font_scale, font_thickness)
         frame_with_text = img_resize_for_cv2(frame_with_text)
         cv2.imshow("StyleGAN3 + GPT Overlay", frame_with_text)
 

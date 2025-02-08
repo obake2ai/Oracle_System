@@ -30,4 +30,18 @@ STYLEGAN_CONFIG = {
     "variations": 1,
     # 無限リアルタイム生成の方式
     "method": "smooth"
+    # ---- 以下、GPT 関連の設定 ----
+    "gpt_model": "./models/gpt_model_epoch_16000.pth",
+    "gpt_prompt": "I'm praying: ",
+    "max_new_tokens": 40,
+    "context_length": 512,
+    "gpt_gpu": "cuda:1",
+    # ---- 以下、オーバーレイテキスト用フォント設定 ----
+    "font_path": "data/fonts/NotoSansCJK-Regular.ttc",
+    "default_font_scale": 0.5,
+    "default_font_thickness": 2,
+    "font_color": (255, 255, 255),
+    # ---- スライドショーの設定 ----
+    "display_time": 10,
+    "clear_time": 0.5
 }
