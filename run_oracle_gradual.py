@@ -426,7 +426,7 @@ def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGA
 @click.option('--save_lat', is_flag=True, default=STYLEGAN_CONFIG['save_lat'], help="save latent vectors to file")
 @click.option('--verbose', is_flag=True, default=STYLEGAN_CONFIG['verbose'], help="verbose output")
 @click.option('--noise_seed', type=int, default=STYLEGAN_CONFIG['noise_seed'], help="noise seed")
-@click.option('--sg_gpu', type=int, default=STYLEGAN_CONFIG['sg_gpu'], help="GPU for StyleGAN3")
+@click.option('--sg_gpu', type=str, default=STYLEGAN_CONFIG['sg_gpu'], help="GPU for StyleGAN3")
 # Animation 関連
 @click.option('--frames', type=str, default=STYLEGAN_CONFIG['frames'], help="total frames and interpolation step (e.g., 200-25)")
 @click.option('--cubic', is_flag=True, default=STYLEGAN_CONFIG['cubic'], help="use cubic splines for smoothing")
