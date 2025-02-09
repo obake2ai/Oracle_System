@@ -426,6 +426,7 @@ def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGA
 @click.option('--save_lat', is_flag=True, default=STYLEGAN_CONFIG['save_lat'], help="save latent vectors to file")
 @click.option('--verbose', is_flag=True, default=STYLEGAN_CONFIG['verbose'], help="verbose output")
 @click.option('--noise_seed', type=int, default=STYLEGAN_CONFIG['noise_seed'], help="noise seed")
+@click.option('--sg_gpu', type=int, default=STYLEGAN_CONFIG['sg_gpu'], help="GPU for StyleGAN3")
 # Animation 関連
 @click.option('--frames', type=str, default=STYLEGAN_CONFIG['frames'], help="total frames and interpolation step (e.g., 200-25)")
 @click.option('--cubic', is_flag=True, default=STYLEGAN_CONFIG['cubic'], help="use cubic splines for smoothing")
@@ -463,7 +464,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time,
-        font_scale, font_thickness, text_lines, transition):
+        sg_gpu, font_scale, font_thickness, text_lines, transition):
     """
     StyleGAN3 によるリアルタイム映像生成と、事前に GPT により生成・翻訳したテキストを組み合わせ、
     映像上に英語（上半分）と日本語訳（下半分）でオーバーレイ表示します。
@@ -525,7 +526,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         "prores": prores,
         "variations": variations,
         "method": method,
-        "stylegan_gpu": "cuda:0",
+        "stylegan_gpu": sg_gpu,
         "font_scale": font_scale,
         "font_thickness": font_thickness
     }

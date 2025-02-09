@@ -12,6 +12,7 @@ STYLEGAN_CONFIG = {
     "save_lat": False,           # latent 保存フラグ
     "verbose": False,
     "noise_seed": 3025,
+    "sg_gpu": "cuda:1",
     # アニメーション関連
     "frames": "200-25",          # （未使用だが互換性のため）
     "cubic": False,
