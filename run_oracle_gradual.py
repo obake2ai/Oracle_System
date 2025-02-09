@@ -31,6 +31,14 @@ import tiktoken
 import openai
 from PIL import Image, ImageDraw, ImageFont
 import datetime
+import gc  # ガベージコレクションによるメモリリーク対策
+
+# オプション：psutil がインストールされていればメモリ使用量ログ出力に利用
+try:
+    import psutil
+    process = psutil.Process(os.getpid())
+except ImportError:
+    psutil = None
 
 # API キーは config/api.py からインポート
 from config.api import OPENAI_API_KEY
@@ -275,30 +283,23 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
                 out = Gs(z_current, label, None, truncation_psi=config_args["trunc"], noise_mode='const')
         out = (out.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
         out_np = out[0].cpu().numpy()[..., ::-1]  # BGR
-        frame_queue.put(out_np)
+
+        # ── フレームキューのバッファリング見直し ──
+        # キューが満杯の場合は古いフレームを破棄して新フレームを入れる
+        try:
+            frame_queue.put(out_np, block=False)
+        except queue.Full:
+            try:
+                frame_queue.get_nowait()  # 先頭の古いフレームを破棄
+            except queue.Empty:
+                pass
+            frame_queue.put(out_np, block=False)
+
         frame_idx_local += 1
         frame_idx += 1
 
 # ──────────────────────────────
 # 中間フレームを生成する関数（軽量なベクトル演算によるブレンド）
-# def generate_transition_frame(frame_a, frame_b, t):
-#     """
-#     frame_a, frame_b: uint8 の numpy 配列（H×W×3）
-#     t: 0～1 の補間パラメータ。t=0 のとき frame_a、t=1 で frame_b となる。
-#
-#     線形補間に加え、乗算ブレンド（t*(1-t) が最大となる t=0.5 付近で効果が現れる）を加味して、
-#     粒子感のある印象の中間フレームを生成します。
-#     """
-#     fa = frame_a.astype(np.float32)
-#     fb = frame_b.astype(np.float32)
-#     linear_blend = (1 - t) * fa + t * fb
-#     multiply_blend = (fa * fb) / 255.0
-#     # t*(1-t)*4 は t=0.5 で最大1.0となる（0または1では効果ゼロ）
-#     alpha_val = t * (1 - t) * 4
-#     result = (1 - alpha_val) * linear_blend + alpha_val * multiply_blend
-#     result = np.clip(result, 0, 255).astype(np.uint8)
-#     return result
-
 def generate_transition_frame(frame_a, frame_b, t):
     """
     frame_a, frame_b: uint8 の numpy 配列（H×W×3）
@@ -336,7 +337,7 @@ def generate_transition_frame(frame_a, frame_b, t):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 # ──────────────────────────────
-# --- 変更後の overlay_text_on_frame 関数 ---
+# --- オーバーレイテキスト関数 ---
 def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGAN_CONFIG['font_path'], color=STYLEGAN_CONFIG['font_color']):
     image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(image)
@@ -472,6 +473,8 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     起動時に指定行数分のテキストを生成し、log フォルダに日付名のフォルダを作成して出力を保存します。
     また、GPU の制約により StyleGAN の生成フレームは約10fpsですが、前後フレームのブレンドにより
     中間フレームを生成して約30fpsに見せるアニメーション遷移処理を、--transition/--no-transition で指定できます。
+
+    さらに、長期運用時のメモリリーク、フレームバッファの蓄積、Xサーバーのコンテキストの再初期化を実施します。
     """
     try:
         if "-" in size:
@@ -553,7 +556,16 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     gan_thread.start()
 
     print("リアルタイムプレビュー開始（'q' キーで終了）")
-    # ここからフレーム表示ループ（遷移処理を組み込む）
+    # ── OpenCV ウィンドウの生成（再初期化用に namedWindow を利用） ──
+    window_name = "StyleGAN3 + GPT Overlay"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+    # 定期実行用の変数設定
+    last_context_reinit_time = time.time()     # コンテキスト再初期化用
+    context_reinit_interval = 300                # 例：300秒（5分）毎に再初期化
+    last_gc_time = time.time()                   # ガベージコレクション用
+    gc_interval = 60                             # 例：60秒毎に gc.collect() を実行
+
     fps_count = 0
     t0 = time.time()
     # 初回フレーム取得（blocking）
@@ -571,6 +583,23 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     last_text_change = time.time()
 
     while True:
+        now = time.time()
+
+        # ── 定期的にガベージコレクションとメモリ使用量のログ出力 ──
+        if now - last_gc_time >= gc_interval:
+            gc.collect()
+            last_gc_time = now
+            if psutil is not None:
+                mem = process.memory_info().rss / (1024 * 1024)
+                print(f"\n[GC] メモリ使用量: {mem:.2f} MB")
+
+        # ── 定期的な OpenCV コンテキストの再初期化（Xサーバー負荷の軽減用） ──
+        if now - last_context_reinit_time >= context_reinit_interval:
+            cv2.destroyAllWindows()
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            last_context_reinit_time = now
+            print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
+
         # 新フレームがあれば非blockingでキューから更新
         try:
             while True:
@@ -592,7 +621,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             disp_frame = curr_frame
 
         # テキスト表示のオン／オフの切替（display_time, clear_time に基づく）
-        now = time.time()
         if text_visible and now - last_text_change >= display_time:
             text_visible = False
             last_text_change = now
@@ -608,7 +636,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
         frame_with_text = overlay_text_on_frame(disp_frame.copy(), texts, font_scale, font_thickness)
         frame_with_text = img_resize_for_cv2(frame_with_text)
-        cv2.imshow("StyleGAN3 + GPT Overlay", frame_with_text)
+        cv2.imshow(window_name, frame_with_text)
 
         fps_count += 1
         elapsed = time.time() - t0
