@@ -301,7 +301,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
     frame_idx_local = 0
     frame_idx = 0
     if config_args["method"] == "random_walk":
-        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=0.02)
+        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=config_args["step_size"])
     else:
         latent_gen = infinite_latent_smooth(z_dim=z_dim, device=device,
                                             cubic=config_args["cubic"],
@@ -460,6 +460,7 @@ def blend_overlay(frame, overlay):
 @click.option('--variations', type=int, default=STYLEGAN_CONFIG['variations'], help="number of variations")
 # 無限生成方式
 @click.option('--method', type=click.Choice(["smooth", "random_walk"]), default=STYLEGAN_CONFIG['method'], help="infinite realtime generation method")
+@click.option('--step_size', type=float, default=STYLEGAN_CONFIG['step_size'], help="step size for infinite realtime generation method")
 # GPT 用オプション
 @click.option('--gpt-model', type=str, default=STYLEGAN_CONFIG['gpt_model'], help="GPT model checkpoint path")
 @click.option('--gpt-prompt', type=str, default=STYLEGAN_CONFIG['gpt_prompt'], help="GPT generation prompt")
@@ -477,7 +478,7 @@ def blend_overlay(frame, overlay):
 @click.option('--transition/--no-transition', default=True, help="Enable transition interpolation for smoother frame rate (simulate 30fps)")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
-        shiftmax, digress, affine_scale, framerate, prores, variations, method,
+        shiftmax, digress, affine_scale, framerate, prores, variations, method, step_size,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time,
         sg_gpu, font_scale, font_thickness, text_lines, transition):
     """
@@ -544,6 +545,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         "prores": prores,
         "variations": variations,
         "method": method,
+        "step_size": step_size,
         "stylegan_gpu": sg_gpu,
         "font_scale": font_scale,
         "font_thickness": font_thickness

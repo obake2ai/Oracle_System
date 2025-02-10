@@ -30,7 +30,8 @@ STYLEGAN_CONFIG = {
     "prores": False,
     "variations": 1,
     # 無限リアルタイム生成の方式
-    "method": "smooth",
+    "method": "srandom_walk",       #"smooth" or "random_walk"
+    "step_size": 0.002,
     # ---- 以下、GPT 関連の設定 ----
     "gpt_model": "./models/gpt_model_epoch_16000.pth",
     "gpt_prompt": "I'm praying: ",
