@@ -16,7 +16,7 @@ GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
 import os
 import os.path as osp
 import sys
-sys.path.append("/root/Share/Oracle_System/src")
+sys.path.append("./Oracle_System/src")
 import time
 import threading
 import queue

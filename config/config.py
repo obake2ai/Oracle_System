@@ -12,7 +12,7 @@ STYLEGAN_CONFIG = {
     "save_lat": False,           # latent 保存フラグ
     "verbose": False,
     "noise_seed": 3025,
-    "sg_gpu": "cuda:1",
+    "sg_gpu": "cuda:0",
     # アニメーション関連
     "frames": "200-25",          # （未使用だが互換性のため）
     "cubic": False,
@@ -36,7 +36,7 @@ STYLEGAN_CONFIG = {
     "gpt_prompt": "I'm praying: ",
     "max_new_tokens": 40,
     "context_length": 512,
-    "gpt_gpu": "cuda:1",
+    "gpt_gpu": "cuda:0",
     # ---- 以下、オーバーレイテキスト用フォント設定 ----
     "font_path": "data/fonts/NotoSansCJK-Regular.ttc",
     "default_font_scale": 0.5,
