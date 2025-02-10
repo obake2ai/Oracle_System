@@ -301,8 +301,10 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
     frame_idx_local = 0
     frame_idx = 0
     if config_args["method"] == "random_walk":
+        print("random")
         latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=config_args["step_size"])
     else:
+        print("smooth")
         latent_gen = infinite_latent_smooth(z_dim=z_dim, device=device,
                                             cubic=config_args["cubic"],
                                             gauss=config_args["gauss"],
