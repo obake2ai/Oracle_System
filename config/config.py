@@ -14,7 +14,7 @@ STYLEGAN_CONFIG = {
     "noise_seed": 3025,
     "sg_gpu": "cuda:0",
     # アニメーション関連
-    "frames": "200-25",          # （未使用だが互換性のため）
+    "frames": "240-120",          # （未使用だが互換性のため）
     "cubic": False,
     "gauss": False,
     # SG3 の変換（アニメーション）パラメータ

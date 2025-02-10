@@ -328,7 +328,6 @@ def generate_transition_frame(frame_a, frame_b, t):
     # 基本のブレンド係数（t*(1-t)*4 は t=0.5 で 1.0 となる）
     base_alpha = t * (1 - t) * 4
     # 白い部分では、乱数の影響と白さマスクでブレンド効果を強調
-    # ※ここでは乱数の寄与と白さを大きめにして、効果が目立つようにしています
     alpha = base_alpha * (0.5 + 0.8 * whiteness * (0.5 + 0.5 * noise))
     alpha = np.clip(alpha, 0, 1)
 
@@ -337,79 +336,59 @@ def generate_transition_frame(frame_a, frame_b, t):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 # ──────────────────────────────
-# --- オーバーレイテキスト関数 ---
-def overlay_text_on_frame(frame, texts, font_scale, thickness, font_path=STYLEGAN_CONFIG['font_path'], color=STYLEGAN_CONFIG['font_color']):
-    image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(image)
-    frame_w, frame_h = image.size
-    max_text_width = int(frame_w * 0.9)
-
-    def wrap_text_pil(text, font):
-        words = text.split(' ')
-        lines = []
-        current_line = ""
-        for word in words:
-            test_line = current_line + (" " if current_line else "") + word
-            if get_text_size(font, test_line)[0] <= max_text_width:
-                current_line = test_line
-            else:
-                if current_line:
-                    lines.append(current_line)
-                    current_line = word
-                else:
-                    sub_line = ""
-                    for char in word:
-                        test_sub_line = sub_line + char
-                        if get_text_size(font, test_sub_line)[0] <= max_text_width:
-                            sub_line = test_sub_line
-                        else:
-                            lines.append(sub_line)
-                            sub_line = char
-                    current_line = sub_line
-        if current_line:
-            lines.append(current_line)
-        return lines
-
-    font_size = int(32 * font_scale)
+# 【新規】 テキストオーバーレイ画像をプリレンダリングする関数
+def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
+    """
+    frame_shape: (H, W, ...) のタプル
+    texts: {"en": 英文, "ja": 日本語} の辞書
+    font_scale: フォントサイズのスケール
+    thickness: テキストの縁取りの太さ
+    font_path: フォントファイルのパス
+    """
+    h, w = frame_shape[:2]
+    # 透明な背景の PIL 画像（RGBA）を作成
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
     try:
-        font = ImageFont.truetype(font_path, font_size)
+        font = ImageFont.truetype(font_path, int(32 * font_scale))
     except Exception as e:
         print("フォント読み込みエラー:", e)
         font = ImageFont.load_default()
 
     en_text = texts.get("en", "")
     ja_text = texts.get("ja", "")
-    en_lines = wrap_text_pil(en_text, font)
-    ja_lines = wrap_text_pil(ja_text, font)
+    # ここでは簡略化のため、英文を画面上部（中心）に、日本語訳を下部（中心）に描画
+    en_x = w // 2
+    en_y = h // 4
+    ja_x = w // 2
+    ja_y = h * 3 // 4
 
-    gap = 5
-    def get_block_height(lines, font):
-        h_total = 0
-        for line in lines:
-            h_total += get_text_size(font, line)[1] + gap
-        return h_total - gap if lines else 0
+    # stroke（縁取り）ありのテキスト描画
+    draw.text((en_x, en_y), en_text, font=font, fill=(255, 255, 255, 255),
+              anchor="mm", stroke_width=thickness, stroke_fill="black")
+    draw.text((ja_x, ja_y), ja_text, font=font, fill=(255, 255, 255, 255),
+              anchor="mm", stroke_width=thickness, stroke_fill="black")
 
-    en_block_h = get_block_height(en_lines, font)
-    ja_block_h = get_block_height(ja_lines, font)
-    top_region_center = frame_h // 4
-    bottom_region_center = frame_h * 3 // 4
-    en_y0 = top_region_center - en_block_h // 2
-    ja_y0 = bottom_region_center - ja_block_h // 2
+    overlay_np = np.array(overlay)
+    return overlay_np
 
-    def draw_lines(lines, y0, font, fill, stroke_fill="black", stroke_width=2):
-        y = y0
-        for line in lines:
-            line_w, line_h = get_text_size(font, line)
-            x = (frame_w - line_w) // 2
-            draw.text((x, y), line, font=font, fill=stroke_fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
-            draw.text((x, y), line, font=font, fill=fill)
-            y += line_h + gap
-
-    draw_lines(en_lines, en_y0, font, fill=color)
-    draw_lines(ja_lines, ja_y0, font, fill=color)
-
-    result = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    return result
+# ──────────────────────────────
+# 【新規】 オーバーレイ画像とフレームをブレンドする関数
+def blend_overlay(frame, overlay):
+    """
+    frame: BGR (uint8) の NumPy 配列
+    overlay: RGBA (uint8) のオーバーレイ画像
+    """
+    # まず、frame を BGRA に変換
+    frame_bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA).astype(np.float32)
+    overlay_float = overlay.astype(np.float32)
+    # overlay のアルファチャンネル（0～1）
+    alpha = overlay_float[:, :, 3:4] / 255.0
+    # 単純なαブレンディング
+    blended = frame_bgra.copy()
+    blended[:, :, :3] = frame_bgra[:, :, :3] * (1 - alpha) + overlay_float[:, :, :3] * alpha
+    blended_bgr = cv2.cvtColor(blended.astype(np.uint8), cv2.COLOR_BGRA2BGR)
+    return blended_bgr
 
 # ──────────────────────────────
 # Click オプション（StyleGAN3 用パラメータは STYLEGAN_CONFIG をデフォルトに）
@@ -581,6 +560,9 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     current_text_idx = 0
     text_visible = True
     last_text_change = time.time()
+    # 新たにオーバーレイ画像のキャッシュ用変数
+    current_overlay = None
+    current_text = None
 
     while True:
         now = time.time()
@@ -629,12 +611,23 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             text_visible = True
             last_text_change = now
 
+        # 表示するテキスト（表示タイミングに応じて空文字列も）
         if text_visible:
-            texts = pre_generated_texts[current_text_idx]
+            new_text = pre_generated_texts[current_text_idx]
         else:
-            texts = {"en": "", "ja": ""}
+            new_text = {"en": "", "ja": ""}
 
-        frame_with_text = overlay_text_on_frame(disp_frame.copy(), texts, font_scale, font_thickness)
+        # テキスト内容が変わった場合のみオーバーレイ画像を再生成（キャッシュ）
+        if new_text != current_text:
+            current_text = new_text
+            current_overlay = create_text_overlay(disp_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
+
+        # オーバーレイ画像がある場合はブレンディング
+        if current_overlay is not None:
+            frame_with_text = blend_overlay(disp_frame.copy(), current_overlay)
+        else:
+            frame_with_text = disp_frame.copy()
+
         frame_with_text = img_resize_for_cv2(frame_with_text)
         cv2.imshow(window_name, frame_with_text)
 
