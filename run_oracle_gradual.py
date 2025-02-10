@@ -55,18 +55,44 @@ from src.realtime_generate import infinite_latent_smooth, infinite_latent_random
 from util.llm import GPT
 
 # グローバル変数（事前生成テキスト用：main で保持するため、別スレッドは使わない）
-# （元々並行処理していたテキスト生成は事前生成に変更）
-# text_lock はテキスト生成時の排他用として残しておきますが、メインループでは直接参照します。
 text_lock = threading.Lock()
 
 # ──────────────────────────────
-# テキストサイズ計測用
+# テキストサイズ計測用（PIL の getbbox を利用）
 def get_text_size(font, text):
-    # font.getbbox(text) returns (x0, y0, x1, y1)
     bbox = font.getbbox(text)
     width = bbox[2] - bbox[0]
     height = bbox[3] - bbox[1]
     return (width, height)
+
+# ──────────────────────────────
+# 文字列を指定幅に合わせて改行する関数（単語単位でラップ、単語が長い場合は文字単位で分割）
+def wrap_text(text, font, max_width):
+    words = text.split(' ')
+    lines = []
+    current_line = ""
+    for word in words:
+        test_line = current_line + (" " if current_line else "") + word
+        if get_text_size(font, test_line)[0] <= max_width:
+            current_line = test_line
+        else:
+            if current_line:
+                lines.append(current_line)
+                current_line = word
+            else:
+                # 単語単体が max_width を超える場合、文字単位で分割
+                sub_line = ""
+                for char in word:
+                    test_sub_line = sub_line + char
+                    if get_text_size(font, test_sub_line)[0] <= max_width:
+                        sub_line = test_sub_line
+                    else:
+                        lines.append(sub_line)
+                        sub_line = char
+                current_line = sub_line
+    if current_line:
+        lines.append(current_line)
+    return lines
 
 # ──────────────────────────────
 # ChatGPT API を利用した翻訳関数
@@ -88,8 +114,8 @@ def translate_to_japanese(text):
         return "翻訳エラー"
 
 # ──────────────────────────────
-# 事前に指定行数分のテキストを生成し、ログに保存する関数
-def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, device, num_lines, log_dir):
+# 事前に指定行数分のテキストを生成し、改行処理を行った上でログに保存する関数
+def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, device, num_lines, log_dir, frame_width, font_scale, font_path):
     tokenizer = tiktoken.get_encoding('gpt2')
     checkpoint = torch.load(model_path, map_location=device)
     state_dict = {key.replace("_orig_mod.", ""): value
@@ -106,6 +132,16 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
     ).to(device)
     model.load_state_dict(state_dict)
     model.eval()
+
+    # フォント読み込み（font_scale に応じたフォントサイズ）
+    font_size = int(32 * font_scale)
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except Exception as e:
+        print("フォント読み込みエラー:", e)
+        font = ImageFont.load_default()
+    # 描画エリアの横幅の90%を最大文字幅とする
+    max_text_width = int(frame_width * 0.9)
 
     generated_lines = []
     log_file_path = os.path.join(log_dir, "generated_texts.txt")
@@ -124,13 +160,17 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
                 en_text = str(generated)
             ja_text = translate_to_japanese(en_text)
 
-            line_data = {"en": en_text, "ja": ja_text}
+            # 改行処理（wrap_text）を実施
+            en_lines = wrap_text(en_text, font, max_text_width)
+            ja_lines = wrap_text(ja_text, font, max_text_width)
+
+            line_data = {"en": en_lines, "ja": ja_lines}
             generated_lines.append(line_data)
 
-            # ログファイルへ1行分ずつ出力（英文と翻訳文）
+            # ログファイルへ出力（改行済みテキストは join して1行ずつ表示）
             log_file.write(f"Line {i+1}:\n")
-            log_file.write("EN: " + en_text.replace("\n", " ") + "\n")
-            log_file.write("JA: " + ja_text.replace("\n", " ") + "\n")
+            log_file.write("EN: " + " / ".join(en_lines) + "\n")
+            log_file.write("JA: " + " / ".join(ja_lines) + "\n")
             log_file.write("\n")
             print(f"Pre-generated text line {i+1}/{num_lines}")
     return generated_lines
@@ -197,7 +237,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
     else:
         label = None
 
-    # NEW SG3 の場合、追加の変換パラメータを生成
     if hasattr(Gs.synthesis, 'input'):
         if config_args["anim_trans"]:
             hw_centers = [np.linspace(-1 + 1/n, 1 - 1/n, n) for n in nHW]
@@ -284,7 +323,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         out = (out.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
         out_np = out[0].cpu().numpy()[..., ::-1]  # BGR
 
-        # ── フレームキューのバッファリング見直し ──
         # キューが満杯の場合は古いフレームを破棄して新フレームを入れる
         try:
             frame_queue.put(out_np, block=False)
@@ -304,49 +342,31 @@ def generate_transition_frame(frame_a, frame_b, t):
     """
     frame_a, frame_b: uint8 の numpy 配列（H×W×3）
     t: 0～1 の補間パラメータ（t=0 で frame_a、t=1 で frame_b）
-
-    ※白い部分に対して粒子的な融合効果を強調するため、frame_b の明るさ（白さ）に基づくマスク
-      と乱数を用いて、ブレンド係数を各ピクセルごとに調整します。
     """
-    # float32 に変換
     fa = frame_a.astype(np.float32)
     fb = frame_b.astype(np.float32)
-
-    # 通常の線形補間
     linear_blend = (1 - t) * fa + t * fb
-    # 乗算ブレンド
     multiply_blend = (fa * fb) / 255.0
-
-    # frame_b の明るさを算出（RGB 平均で評価）
     brightness = np.mean(fb, axis=2, keepdims=True) / 255.0
-    # 白さマスク：閾値を 0.6 に下げ、0.6～1.0 で線形に 0～1 にマッピング
     whiteness = np.clip((brightness - 0.6) / 0.4, 0, 1)
-
-    # 各ピクセルごとに一様乱数（粒状効果用）
     noise = np.random.uniform(0, 1, size=whiteness.shape)
-
-    # 基本のブレンド係数（t*(1-t)*4 は t=0.5 で 1.0 となる）
     base_alpha = t * (1 - t) * 4
-    # 白い部分では、乱数の影響と白さマスクでブレンド効果を強調
     alpha = base_alpha * (0.5 + 0.8 * whiteness * (0.5 + 0.5 * noise))
     alpha = np.clip(alpha, 0, 1)
-
-    # 線形補間と乗算ブレンドを、ピクセルごとの α で合成
     result = (1 - alpha) * linear_blend + alpha * multiply_blend
     return np.clip(result, 0, 255).astype(np.uint8)
 
 # ──────────────────────────────
-# 【新規】 テキストオーバーレイ画像をプリレンダリングする関数
+# 【新規】 改行済みテキスト行リストを用いてオーバーレイ画像を生成する関数
 def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
     """
     frame_shape: (H, W, ...) のタプル
-    texts: {"en": 英文, "ja": 日本語} の辞書
+    texts: {"en": [行1, 行2, ...], "ja": [行1, 行2, ...]} の辞書（各言語とも既に改行済み）
     font_scale: フォントサイズのスケール
     thickness: テキストの縁取りの太さ
     font_path: フォントファイルのパス
     """
     h, w = frame_shape[:2]
-    # 透明な背景の PIL 画像（RGBA）を作成
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     try:
@@ -355,19 +375,37 @@ def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
         print("フォント読み込みエラー:", e)
         font = ImageFont.load_default()
 
-    en_text = texts.get("en", "")
-    ja_text = texts.get("ja", "")
-    # ここでは簡略化のため、英文を画面上部（中心）に、日本語訳を下部（中心）に描画
-    en_x = w // 2
-    en_y = h // 4
-    ja_x = w // 2
-    ja_y = h * 3 // 4
+    en_lines = texts.get("en", [])
+    ja_lines = texts.get("ja", [])
+    gap = 5
 
-    # stroke（縁取り）ありのテキスト描画
-    draw.text((en_x, en_y), en_text, font=font, fill=(255, 255, 255, 255),
-              anchor="mm", stroke_width=thickness, stroke_fill="black")
-    draw.text((ja_x, ja_y), ja_text, font=font, fill=(255, 255, 255, 255),
-              anchor="mm", stroke_width=thickness, stroke_fill="black")
+    # 英文ブロックの高さ計算
+    en_block_h = sum(get_text_size(font, line)[1] for line in en_lines) + (len(en_lines)-1)*gap if en_lines else 0
+    # 日本語ブロックの高さ計算
+    ja_block_h = sum(get_text_size(font, line)[1] for line in ja_lines) + (len(ja_lines)-1)*gap if ja_lines else 0
+
+    top_region_center = h // 4
+    bottom_region_center = h * 3 // 4
+    en_y0 = top_region_center - en_block_h // 2
+    ja_y0 = bottom_region_center - ja_block_h // 2
+
+    # 英文を中央寄せで描画
+    y = en_y0
+    for line in en_lines:
+        line_w, line_h = get_text_size(font, line)
+        x = (w - line_w) // 2
+        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255),
+                  stroke_width=thickness, stroke_fill="black")
+        y += line_h + gap
+
+    # 日本語を中央寄せで描画
+    y = ja_y0
+    for line in ja_lines:
+        line_w, line_h = get_text_size(font, line)
+        x = (w - line_w) // 2
+        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255),
+                  stroke_width=thickness, stroke_fill="black")
+        y += line_h + gap
 
     overlay_np = np.array(overlay)
     return overlay_np
@@ -379,19 +417,16 @@ def blend_overlay(frame, overlay):
     frame: BGR (uint8) の NumPy 配列
     overlay: RGBA (uint8) のオーバーレイ画像
     """
-    # まず、frame を BGRA に変換
     frame_bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA).astype(np.float32)
     overlay_float = overlay.astype(np.float32)
-    # overlay のアルファチャンネル（0～1）
     alpha = overlay_float[:, :, 3:4] / 255.0
-    # 単純なαブレンディング
     blended = frame_bgra.copy()
     blended[:, :, :3] = frame_bgra[:, :, :3] * (1 - alpha) + overlay_float[:, :, :3] * alpha
     blended_bgr = cv2.cvtColor(blended.astype(np.uint8), cv2.COLOR_BGRA2BGR)
     return blended_bgr
 
 # ──────────────────────────────
-# Click オプション（StyleGAN3 用パラメータは STYLEGAN_CONFIG をデフォルトに）
+# Click オプション（各種パラメータは STYLEGAN_CONFIG をデフォルトに）
 @click.command()
 @click.option('--out-dir', type=str, default=STYLEGAN_CONFIG['out_dir'], help="output directory")
 @click.option('--model', type=str, default=STYLEGAN_CONFIG['model'], help="path to pkl checkpoint file")
@@ -453,7 +488,8 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     また、GPU の制約により StyleGAN の生成フレームは約10fpsですが、前後フレームのブレンドにより
     中間フレームを生成して約30fpsに見せるアニメーション遷移処理を、--transition/--no-transition で指定できます。
 
-    さらに、長期運用時のメモリリーク、フレームバッファの蓄積、Xサーバーのコンテキストの再初期化を実施します。
+    さらに、事前生成時にテキストの描画領域からはみ出るかを判定して改行済みテキストを保存することで、
+    オーバーレイ時の重い改行計算を省いてリアルタイム性を追求します。
     """
     try:
         if "-" in size:
@@ -522,8 +558,14 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
     gpt_device = torch.device(gpt_gpu if torch.cuda.is_available() else "cpu")
     print("事前にテキストを生成中...")
-    pre_generated_texts = pre_generate_text_lines(gpt_model, gpt_prompt, max_new_tokens, context_length,
-                                                    gpt_device, text_lines, log_dir)
+    # 画面の横幅は size_parsed[1]、font_scale と font_path は各パラメータから取得
+    pre_generated_texts = pre_generate_text_lines(
+        gpt_model, gpt_prompt, max_new_tokens, context_length,
+        gpt_device, text_lines, log_dir,
+        frame_width=size_parsed[1],
+        font_scale=font_scale,
+        font_path=STYLEGAN_CONFIG['font_path']
+    )
     print("テキストの事前生成完了。")
 
     # StyleGAN3 用フレーム生成スレッド開始
@@ -535,39 +577,34 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     gan_thread.start()
 
     print("リアルタイムプレビュー開始（'q' キーで終了）")
-    # ── OpenCV ウィンドウの生成（再初期化用に namedWindow を利用） ──
     window_name = "StyleGAN3 + GPT Overlay"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     # 定期実行用の変数設定
-    last_context_reinit_time = time.time()     # コンテキスト再初期化用
-    context_reinit_interval = 300                # 例：300秒（5分）毎に再初期化
-    last_gc_time = time.time()                   # ガベージコレクション用
-    gc_interval = 60                             # 例：60秒毎に gc.collect() を実行
+    last_context_reinit_time = time.time()
+    context_reinit_interval = 300
+    last_gc_time = time.time()
+    gc_interval = 60
 
     fps_count = 0
     t0 = time.time()
-    # 初回フレーム取得（blocking）
-    curr_frame = frame_queue.get()
+    curr_frame = frame_queue.get()  # blocking
     prev_frame = curr_frame.copy()
     last_frame_update = time.time()
-    # 表示間隔：約33ms（30fps）
-    display_interval_ms = 33
-    # StyleGAN3 のフレーム間隔（10fps → 0.1秒）
-    stylegan_interval = 0.1
+    display_interval_ms = 33  # 約30fps
+    stylegan_interval = 0.1     # StyleGAN3 のフレーム間隔（約10fps）
 
     # テキスト表示用の変数
     current_text_idx = 0
     text_visible = True
     last_text_change = time.time()
-    # 新たにオーバーレイ画像のキャッシュ用変数
+    # オーバーレイ画像キャッシュ用変数
     current_overlay = None
     current_text = None
 
     while True:
         now = time.time()
 
-        # ── 定期的にガベージコレクションとメモリ使用量のログ出力 ──
         if now - last_gc_time >= gc_interval:
             gc.collect()
             last_gc_time = now
@@ -575,14 +612,12 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 mem = process.memory_info().rss / (1024 * 1024)
                 print(f"\n[GC] メモリ使用量: {mem:.2f} MB")
 
-        # ── 定期的な OpenCV コンテキストの再初期化（Xサーバー負荷の軽減用） ──
         if now - last_context_reinit_time >= context_reinit_interval:
             cv2.destroyAllWindows()
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             last_context_reinit_time = now
             print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
 
-        # 新フレームがあれば非blockingでキューから更新
         try:
             while True:
                 new_frame = frame_queue.get_nowait()
@@ -592,7 +627,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         except queue.Empty:
             pass
 
-        # 補間パラメータ t を計算（0～1）
         t = (time.time() - last_frame_update) / stylegan_interval
         if t > 1:
             t = 1.0
@@ -602,7 +636,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         else:
             disp_frame = curr_frame
 
-        # テキスト表示のオン／オフの切替（display_time, clear_time に基づく）
+        # テキスト表示のオン／オフ（display_time, clear_time に基づく）
         if text_visible and now - last_text_change >= display_time:
             text_visible = False
             last_text_change = now
@@ -611,18 +645,17 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             text_visible = True
             last_text_change = now
 
-        # 表示するテキスト（表示タイミングに応じて空文字列も）
+        # 表示するテキスト：テキスト非表示の場合は空のリストを設定
         if text_visible:
             new_text = pre_generated_texts[current_text_idx]
         else:
-            new_text = {"en": "", "ja": ""}
+            new_text = {"en": [], "ja": []}
 
-        # テキスト内容が変わった場合のみオーバーレイ画像を再生成（キャッシュ）
+        # テキスト内容が変わった場合のみオーバーレイ画像を再生成
         if new_text != current_text:
             current_text = new_text
             current_overlay = create_text_overlay(disp_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
 
-        # オーバーレイ画像がある場合はブレンディング
         if current_overlay is not None:
             frame_with_text = blend_overlay(disp_frame.copy(), current_overlay)
         else:
