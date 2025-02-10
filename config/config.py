@@ -30,7 +30,7 @@ STYLEGAN_CONFIG = {
     "prores": False,
     "variations": 1,
     # 無限リアルタイム生成の方式
-    "method": "srandom_walk",       #"smooth" or "random_walk"
+    "method": "random_walk",       #"smooth" or "random_walk"
     "step_size": 0.002,
     # ---- 以下、GPT 関連の設定 ----
     "gpt_model": "./models/gpt_model_epoch_16000.pth",
