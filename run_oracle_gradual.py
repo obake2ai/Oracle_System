@@ -187,6 +187,52 @@ def blend_overlay(frame, overlay):
     blended_bgr = cv2.cvtColor(blended.astype(np.uint8), cv2.COLOR_BGRA2BGR)
     return blended_bgr
 
+# 定数（例：StyleGAN 出力が約10fps で、表示は30fps なら 3 フレームに分割）
+NUM_TRANSITION_FRAMES = 3
+
+def transition_frame_generator(base_queue, transition_queue, stop_event, num_transition_frames=NUM_TRANSITION_FRAMES):
+    """
+    base_queue から新しいベースフレームを取得し、
+    直前のフレームから新フレームへの transition（補間）フレームを生成して transition_queue に格納します。
+
+    各 transition シーケンスでは、初回にランダムなノイズマトリックス R を生成し、
+    t = i/num_transition_frames (i=1..num_transition_frames-1) に対して、各ピクセルごとに以下の条件で
+      - R < t の場合、frame_b の値を使用
+      - それ以外は frame_a の値を使用
+    というバイナリマスクを用いて「粒子感」のある dissolve 効果を実現します。
+    """
+    # 最初のベースフレームを取得（ブロッキング）
+    prev_frame = base_queue.get(block=True)
+    while not stop_event.is_set():
+        try:
+            curr_frame = base_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue  # 新フレームが来るまで待機
+
+        # 事前にランダムなマトリックス R を生成（1チャネル、画面サイズと同じ）
+        H, W, _ = prev_frame.shape
+        R = np.random.rand(H, W, 1)
+
+        # 補間フレーム群を生成
+        for i in range(1, num_transition_frames):
+            t = i / num_transition_frames  # 0 < t < 1
+            # 各ピクセルごとに、R < t なら 1、そうでなければ 0 のバイナリマスク
+            mask = (R < t).astype(np.float32)
+            # frame_a と frame_b の各ピクセルを、マスクに基づいて選択（型変換を忘れずに）
+            inter_frame = (prev_frame.astype(np.float32) * (1 - mask) + curr_frame.astype(np.float32) * mask).astype(np.uint8)
+            try:
+                transition_queue.put(inter_frame, block=False)
+            except queue.Full:
+                pass  # キューがいっぱいならスキップ（または後で上書き）
+
+        # 最終フレーム（t=1）は curr_frame をそのまま格納
+        try:
+            transition_queue.put(curr_frame, block=False)
+        except queue.Full:
+            pass
+
+        prev_frame = curr_frame
+
 def stylegan_frame_generator(frame_queue, stop_event, config_args):
     device = torch.device(config_args["stylegan_gpu"])
     noise_seed = config_args["noise_seed"]
@@ -554,6 +600,14 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     last_text_change = time.time()
     current_overlay = None
     current_text = None
+
+    if transition:
+        transition_queue = queue.Queue(maxsize=10)
+        trans_thread = threading.Thread(target=transition_frame_generator,
+                                        args=(frame_queue, transition_queue, stop_event),
+                                        daemon=True)
+        trans_thread.start()
+
     while True:
         now = time.time()
         if now - last_gc_time >= gc_interval:
@@ -569,21 +623,27 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             last_context_reinit_time = now
             print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
-        try:
-            while True:
-                new_frame = frame_queue.get_nowait()
-                prev_frame = curr_frame.copy()
-                curr_frame = new_frame
-                last_frame_update = time.time()
-        except queue.Empty:
-            pass
-        t = (time.time() - last_frame_update) / stylegan_interval
-        if t > 1:
-            t = 1.0
+
         if transition:
-            disp_frame = generate_transition_frame(prev_frame, curr_frame, t)
+            try:
+                # キューにたまっている補間済みフレームを可能な限り取り出す
+                while True:
+                    new_frame = transition_queue.get_nowait()
+                    curr_frame = new_frame
+                    last_frame_update = time.time()
+            except queue.Empty:
+                pass
         else:
-            disp_frame = curr_frame
+            # transition が無効なら、従来通り base_frame_queue から取得
+            try:
+                while True:
+                    new_frame = frame_queue.get_nowait()
+                    prev_frame = curr_frame.copy()
+                    curr_frame = new_frame
+                    last_frame_update = time.time()
+            except queue.Empty:
+                pass
+                
         if text_visible and now - last_text_change >= display_time:
             text_visible = False
             last_text_change = now
