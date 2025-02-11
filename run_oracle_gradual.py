@@ -2,14 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Ubuntu（2 GPU搭載）環境において、StyleGAN3 によるリアルタイム映像生成と
-GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
-映像上に日本語（上部）と英語（下部）のテキストをオーバーレイ表示します。
-両者を包むテキストボックスが画面中央に配置され、両ブロック間は1行分の隙間があります。
-
-また、出力ウィンドウはフルスクリーン・モード（ウィンドウ枠やタスクバーなどのOS UIを非表示）で、
-動画の横幅に合わせたレターボックス処理により上下は完全に黒く埋められます。
-出力ウィンドウ数は --num-displays で1または2を指定できます。
+このコードは、StyleGAN3 によるリアルタイム映像生成と GPT によるテキスト生成＋翻訳を組み合わせ、
+映像上に日本語（上部、半透明）と英語（下部、半透明）のテキストをオーバーレイ表示します。
+また、transition 機能では、StyleGAN3 の低fps出力から別スレッドで事前補間し、ピクセルごとに粒子状の dissolve 効果を与えた
+中間フレームを生成して、スムーズなアニメーション（約30fps相当）に変換します。
+さらに、--fullscreen/--windowed オプションで表示モードを切り替えられ、出力ウィンドウ数も選択可能です。
 """
 
 import os
@@ -32,18 +29,20 @@ from PIL import Image, ImageDraw, ImageFont
 import datetime
 import gc
 
+# psutil（メモリ監視用）
 try:
     import psutil
     process = psutil.Process(os.getpid())
 except ImportError:
     psutil = None
 
+# tkinter（スクリーン解像度取得のフォールバック用）
 try:
     import tkinter as tk
 except ImportError:
     tk = None
 
-# 可能であれば screeninfo で実際のモニター解像度を取得
+# 可能なら screeninfo で実際のモニター解像度を取得
 try:
     from screeninfo import get_monitors
     monitors = get_monitors()
@@ -70,12 +69,12 @@ from util.utilgan import latent_anima
 from src.realtime_generate import infinite_latent_smooth, infinite_latent_random_walk, img_resize_for_cv2
 from util.llm import GPT
 
-# 事前生成テキスト用のグローバル変数
+# グローバル変数（事前生成テキスト用）
 text_lock = threading.Lock()
 
-# ======================
+# -------------------------------
 # 各種ユーティリティ関数
-# ======================
+# -------------------------------
 
 def get_text_size(font, text):
     bbox = font.getbbox(text)
@@ -113,7 +112,7 @@ def translate_to_japanese(text):
     prompt = f"次の英語のテキストを、なるべく元の文体を保ったまま、神秘的な神話テキストとして日本語に翻訳してください:\n\n{text}"
     try:
         response = openai.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o",  # 必要に応じて変更
             messages=[
                 {"role": "system", "content": "You are a professional translator."},
                 {"role": "user", "content": prompt}
@@ -172,13 +171,10 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
             print(f"Pre-generated text line {i+1}/{num_lines}")
     return generated_lines
 
-# ----------------------
-# blend_overlay の定義（必ずメインループより前に定義する）
+# -------------------------------
+# blend_overlay: オーバーレイとフレームの合成
+# -------------------------------
 def blend_overlay(frame, overlay):
-    """
-    frame: BGR (uint8) の NumPy 配列
-    overlay: RGBA (uint8) のオーバーレイ画像
-    """
     frame_bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA).astype(np.float32)
     overlay_float = overlay.astype(np.float32)
     alpha = overlay_float[:, :, 3:4] / 255.0
@@ -187,52 +183,9 @@ def blend_overlay(frame, overlay):
     blended_bgr = cv2.cvtColor(blended.astype(np.uint8), cv2.COLOR_BGRA2BGR)
     return blended_bgr
 
-# 定数（例：StyleGAN 出力が約10fps で、表示は30fps なら 3 フレームに分割）
-NUM_TRANSITION_FRAMES = 3
-
-def transition_frame_generator(base_queue, transition_queue, stop_event, num_transition_frames=NUM_TRANSITION_FRAMES):
-    """
-    base_queue から新しいベースフレームを取得し、
-    直前のフレームから新フレームへの transition（補間）フレームを生成して transition_queue に格納します。
-
-    各 transition シーケンスでは、初回にランダムなノイズマトリックス R を生成し、
-    t = i/num_transition_frames (i=1..num_transition_frames-1) に対して、各ピクセルごとに以下の条件で
-      - R < t の場合、frame_b の値を使用
-      - それ以外は frame_a の値を使用
-    というバイナリマスクを用いて「粒子感」のある dissolve 効果を実現します。
-    """
-    # 最初のベースフレームを取得（ブロッキング）
-    prev_frame = base_queue.get(block=True)
-    while not stop_event.is_set():
-        try:
-            curr_frame = base_queue.get(timeout=0.1)
-        except queue.Empty:
-            continue  # 新フレームが来るまで待機
-
-        # 事前にランダムなマトリックス R を生成（1チャネル、画面サイズと同じ）
-        H, W, _ = prev_frame.shape
-        R = np.random.rand(H, W, 1)
-
-        # 補間フレーム群を生成
-        for i in range(1, num_transition_frames):
-            t = i / num_transition_frames  # 0 < t < 1
-            # 各ピクセルごとに、R < t なら 1、そうでなければ 0 のバイナリマスク
-            mask = (R < t).astype(np.float32)
-            # frame_a と frame_b の各ピクセルを、マスクに基づいて選択（型変換を忘れずに）
-            inter_frame = (prev_frame.astype(np.float32) * (1 - mask) + curr_frame.astype(np.float32) * mask).astype(np.uint8)
-            try:
-                transition_queue.put(inter_frame, block=False)
-            except queue.Full:
-                pass  # キューがいっぱいならスキップ（または後で上書き）
-
-        # 最終フレーム（t=1）は curr_frame をそのまま格納
-        try:
-            transition_queue.put(curr_frame, block=False)
-        except queue.Full:
-            pass
-
-        prev_frame = curr_frame
-
+# -------------------------------
+# StyleGAN3 フレーム生成スレッド（従来処理）
+# -------------------------------
 def stylegan_frame_generator(frame_queue, stop_event, config_args):
     device = torch.device(config_args["stylegan_gpu"])
     noise_seed = config_args["noise_seed"]
@@ -377,20 +330,39 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         frame_idx_local += 1
         frame_idx += 1
 
-def generate_transition_frame(frame_a, frame_b, t):
-    fa = frame_a.astype(np.float32)
-    fb = frame_b.astype(np.float32)
-    linear_blend = (1 - t) * fa + t * fb
-    multiply_blend = (fa * fb) / 255.0
-    brightness = np.mean(fb, axis=2, keepdims=True) / 255.0
-    whiteness = np.clip((brightness - 0.6) / 0.4, 0, 1)
-    noise = np.random.uniform(0, 1, size=whiteness.shape)
-    base_alpha = t * (1 - t) * 4
-    alpha = base_alpha * (0.5 + 0.8 * whiteness * (0.5 + 0.5 * noise))
-    alpha = np.clip(alpha, 0, 1)
-    result = (1 - alpha) * linear_blend + alpha * multiply_blend
-    return np.clip(result, 0, 255).astype(np.uint8)
+# -------------------------------
+# transition_frame_generator: 補間フレームを生成する別スレッド用関数
+# -------------------------------
+NUM_TRANSITION_FRAMES = 3  # 例として、StyleGAN 出力の間を 3 分割（約30fps相当にする）
 
+def transition_frame_generator(base_queue, transition_queue, stop_event, num_transition_frames=NUM_TRANSITION_FRAMES):
+    # 最初のベースフレームを取得（ブロッキング）
+    prev_frame = base_queue.get(block=True)
+    while not stop_event.is_set():
+        try:
+            curr_frame = base_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        H, W, _ = prev_frame.shape
+        R = np.random.rand(H, W, 1)  # 画面サイズに合わせたランダムマトリックス
+        # 補間フレーム群を生成
+        for i in range(1, num_transition_frames):
+            t = i / num_transition_frames  # 0 < t < 1
+            mask = (R < t).astype(np.float32)
+            inter_frame = (prev_frame.astype(np.float32) * (1 - mask) + curr_frame.astype(np.float32) * mask).astype(np.uint8)
+            try:
+                transition_queue.put(inter_frame, block=False)
+            except queue.Full:
+                pass
+        try:
+            transition_queue.put(curr_frame, block=False)
+        except queue.Full:
+            pass
+        prev_frame = curr_frame
+
+# -------------------------------
+# create_text_overlay: テキストオーバーレイ画像生成（透過度付き）
+# -------------------------------
 def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
     h, w = frame_shape[:2]
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -408,22 +380,28 @@ def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
     combined_height = ja_block_height + (default_line_height if ja_lines and en_lines else 0) + en_block_height
     start_y = (h - combined_height) // 2
     y = start_y
+    # 透過度 90% (alpha=230)
+    text_fill = (255, 255, 255, 230)
+    stroke_fill = (0, 0, 0, 230)
     for line in ja_lines:
         line_w, line_h = get_text_size(font, line)
         x = (w - line_w) // 2
-        draw.text((x, y), line, font=font, fill=(255,255,255,255),
-                  stroke_width=thickness, stroke_fill="black")
+        draw.text((x, y), line, font=font, fill=text_fill,
+                  stroke_width=thickness, stroke_fill=stroke_fill)
         y += line_h
     if ja_lines and en_lines:
         y += default_line_height
     for line in en_lines:
         line_w, line_h = get_text_size(font, line)
         x = (w - line_w) // 2
-        draw.text((x, y), line, font=font, fill=(255,255,255,255),
-                  stroke_width=thickness, stroke_fill="black")
+        draw.text((x, y), line, font=font, fill=text_fill,
+                  stroke_width=thickness, stroke_fill=stroke_fill)
         y += line_h
     return np.array(overlay)
 
+# -------------------------------
+# letterbox_frame: 生成フレームを画面解像度に合わせる（上下を黒で埋める／クロップ）
+# -------------------------------
 def letterbox_frame(frame, target_width, target_height):
     orig_h, orig_w = frame.shape[:2]
     scale_factor = target_width / orig_w
@@ -442,9 +420,9 @@ def letterbox_frame(frame, target_width, target_height):
     else:
         return resized_frame
 
-# ======================
-# CLI 部分
-# ======================
+# -------------------------------
+# CLI 部分（各種オプション含む）
+# -------------------------------
 @click.command()
 @click.option('--out-dir', type=str, default=STYLEGAN_CONFIG['out_dir'], help="output directory")
 @click.option('--model', type=str, default=STYLEGAN_CONFIG['model'], help="path to pkl checkpoint file")
@@ -487,7 +465,6 @@ def letterbox_frame(frame, target_width, target_height):
 @click.option('--num-displays', type=int, default=1, help="Number of output display windows (1 or 2)")
 @click.option('--transition/--no-transition', default=True, help="Enable transition interpolation for smoother frame rate (simulate 30fps)")
 @click.option('--fullscreen/--windowed', default=True, help="Use fullscreen mode if enabled; otherwise use window mode")
-
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method, chunk_size,
@@ -570,6 +547,13 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                                   args=(frame_queue, stop_event, config_args),
                                   daemon=True)
     gan_thread.start()
+    # transition 処理用キューと別スレッド
+    if transition:
+        transition_queue = queue.Queue(maxsize=10)
+        trans_thread = threading.Thread(target=transition_frame_generator,
+                                        args=(frame_queue, transition_queue, stop_event),
+                                        daemon=True)
+        trans_thread.start()
     print("リアルタイムプレビュー開始（'q' キーで終了）")
     screen_width = actual_screen_width
     screen_height = actual_screen_height
@@ -577,7 +561,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     for i in range(num_displays):
         win_name = f"Display {i+1}"
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-        # フルスクリーンの場合のみプロパティ設定を行う
         if fullscreen:
             cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         window_names.append(win_name)
@@ -600,14 +583,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     last_text_change = time.time()
     current_overlay = None
     current_text = None
-
-    if transition:
-        transition_queue = queue.Queue(maxsize=10)
-        trans_thread = threading.Thread(target=transition_frame_generator,
-                                        args=(frame_queue, transition_queue, stop_event),
-                                        daemon=True)
-        trans_thread.start()
-
     while True:
         now = time.time()
         if now - last_gc_time >= gc_interval:
@@ -620,30 +595,30 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             cv2.destroyAllWindows()
             for win in window_names:
                 cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-                cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                if fullscreen:
+                    cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             last_context_reinit_time = now
             print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
-
-        if transition:
-            try:
-                # キューにたまっている補間済みフレームを可能な限り取り出す
+        try:
+            if transition:
                 while True:
                     new_frame = transition_queue.get_nowait()
                     curr_frame = new_frame
                     last_frame_update = time.time()
-            except queue.Empty:
-                pass
-        else:
-            # transition が無効なら、従来通り base_frame_queue から取得
-            try:
+            else:
                 while True:
                     new_frame = frame_queue.get_nowait()
                     prev_frame = curr_frame.copy()
                     curr_frame = new_frame
                     last_frame_update = time.time()
-            except queue.Empty:
-                pass
-                
+        except queue.Empty:
+            pass
+        t = (time.time() - last_frame_update) / stylegan_interval
+        if t > 1:
+            t = 1.0
+        # transition が有効の場合は、既に補間済みのフレームを表示しているので
+        # メインループ側で重い補間処理は行わない
+        disp_frame = curr_frame
         if text_visible and now - last_text_change >= display_time:
             text_visible = False
             last_text_change = now
@@ -669,7 +644,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         elapsed = time.time() - t0
         if elapsed >= 1.0:
             print(f"\r{fps_count / elapsed:.2f} fps", end="")
-            sys.stdout.flush()
             t0 = time.time()
             fps_count = 0
         key = cv2.waitKey(display_interval_ms) & 0xFF
