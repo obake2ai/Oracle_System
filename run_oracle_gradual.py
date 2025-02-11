@@ -446,7 +446,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method, chunk_size,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time,
-        sg_gpu, font_scale, font_thickness, text_lines, num_displays, transition):
+        sg_gpu, font_scale, font_thickness, text_lines, num_displays, transition, fullscreen):
     try:
         if "-" in size:
             w, h = size.split("-")
