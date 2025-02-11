@@ -4,13 +4,14 @@
 """
 Ubuntu（2 GPU搭載）環境において、StyleGAN3 によるリアルタイム映像生成と
 GPT によるテキスト生成＋ChatGPT API 翻訳を組み合わせ、
-映像上に英語（上半分）と日本語訳（下半分）の二段組でオーバーレイ表示するサンプルコードです。
+映像上に英語（下部）と日本語（上部）のテキストを、両者を包むテキストボックスが全体中央に配置され、
+英語と日本語の間は1行分の高さの隙間がある状態でオーバーレイ表示するサンプルコードです。
 
 ※事前に指定行数分のテキストを生成し、logフォルダに日付名のフォルダを作成して出力を保存した後、
 　StyleGAN3 のリアルタイム生成に対して１行ずつオーバーレイ表示します。
 
 ※さらに、GPU性能の制約で約10fpsのStyleGAN生成フレームを、前後フレームの遷移（ブレンド）処理により
-　約30fpsに見せるようにしています。なお、この遷移処理は config から --transition/--no-transition オプションで切り替え可能です。
+　約30fpsに見せるようにしています。なお、この遷移処理は --transition/--no-transition オプションで切り替え可能です。
 """
 
 import os
@@ -40,11 +41,31 @@ try:
 except ImportError:
     psutil = None
 
-# システムのスクリーン解像度を取得するため tkinter をインポート
+# tkinter はあくまでフォールバック用
 try:
     import tkinter as tk
 except ImportError:
     tk = None
+
+# 可能であれば screeninfo で実際の解像度を取得
+try:
+    from screeninfo import get_monitors
+    monitors = get_monitors()
+    if monitors:
+        actual_screen_width = monitors[0].width
+        actual_screen_height = monitors[0].height
+    else:
+        raise Exception("No monitors found")
+except Exception as e:
+    # tkinter にフォールバック
+    if tk is not None:
+        root = tk.Tk()
+        actual_screen_width = root.winfo_screenwidth()
+        actual_screen_height = root.winfo_screenheight()
+        root.destroy()
+    else:
+        actual_screen_width, actual_screen_height = 1920, 1080
+        print("screeninfo, tkinter どちらも利用できなかったため、デフォルトの解像度 1920x1080 を使用します。")
 
 # API キーは config/api.py からインポート
 from config.api import OPENAI_API_KEY
@@ -86,7 +107,6 @@ def wrap_text(text, font, max_width):
                 lines.append(current_line)
                 current_line = word
             else:
-                # 単語単体が max_width を超える場合、文字単位で分割
                 sub_line = ""
                 for char in word:
                     test_sub_line = sub_line + char
@@ -139,14 +159,12 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
     model.load_state_dict(state_dict)
     model.eval()
 
-    # フォント読み込み（font_scale に応じたフォントサイズ）
     font_size = int(32 * font_scale)
     try:
         font = ImageFont.truetype(font_path, font_size)
     except Exception as e:
         print("フォント読み込みエラー:", e)
         font = ImageFont.load_default()
-    # 描画エリアの横幅の90%を最大文字幅とする
     max_text_width = int(frame_width * 0.9)
 
     generated_lines = []
@@ -157,7 +175,6 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
             with torch.no_grad():
                 generated = model.generate(input_ids, max_new_tokens=max_new_tokens)[0]
 
-            # generated の型に応じてデコード
             if isinstance(generated, torch.Tensor):
                 generated = generated.tolist()
             if isinstance(generated, (list, tuple)) and all(isinstance(token, int) for token in generated):
@@ -166,14 +183,12 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
                 en_text = str(generated)
             ja_text = translate_to_japanese(en_text)
 
-            # 改行処理（wrap_text）を実施
             en_lines = wrap_text(en_text, font, max_text_width)
             ja_lines = wrap_text(ja_text, font, max_text_width)
 
             line_data = {"en": en_lines, "ja": ja_lines}
             generated_lines.append(line_data)
 
-            # ログファイルへ出力（改行済みテキストは join して1行ずつ表示）
             log_file.write(f"Line {i+1}:\n")
             log_file.write("EN: " + " / ".join(en_lines) + "\n")
             log_file.write("JA: " + " / ".join(ja_lines) + "\n")
@@ -192,12 +207,10 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 
     os.makedirs(config_args["out_dir"], exist_ok=True)
 
-    # StyleGAN3 のネットワーク読み込み用パラメータ作成
     Gs_kwargs = dnnlib.EasyDict()
     for key in ["verbose", "size", "scale_type"]:
         Gs_kwargs[key] = config_args[key]
 
-    # latmask の有無で latent blending 用パラメータを設定
     if config_args["latmask"] is None:
         nxy = config_args["nXY"]
         nHW = [int(s) for s in nxy.split('-')][::-1]
@@ -211,22 +224,19 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         lmask = [None]
     else:
         n_mult = 2
-        nHW = [1,1]
-        if osp.isfile(config_args["latmask"]):  # single file
+        nHW = [1, 1]
+        if osp.isfile(config_args["latmask"]):
             lmask = np.asarray([[img_read(config_args["latmask"])[:,:,0] / 255.]])
-        elif osp.isdir(config_args["latmask"]):  # directory with frame sequence
+        elif osp.isdir(config_args["latmask"]):
             lmask = np.expand_dims(np.asarray([img_read(f)[:,:,0] / 255. for f in img_list(config_args["latmask"])]), 1)
         else:
             print(' !! Blending mask not found:', config_args["latmask"]); exit(1)
-        if config_args["verbose"] is True:
+        if config_args["verbose"]:
             print(' Latent blending with mask', config_args["latmask"], lmask.shape)
         lmask = np.concatenate((lmask, 1 - lmask), 1)
         lmask = torch.from_numpy(lmask).to(device)
 
-    # Parse frames と fstep (例："200-25")
     frames_val, fstep_val = [int(x) for x in config_args["frames"].split('-')]
-
-    # StyleGAN3 ネットワークの読み込み
     model_path = config_args["model"]
     pkl_name = os.path.splitext(model_path)[0]
     custom = False if '.pkl' in model_path.lower() else True
@@ -331,12 +341,11 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         out = (out.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
         out_np = out[0].cpu().numpy()[..., ::-1]  # BGR
 
-        # キューが満杯の場合は古いフレームを破棄して新フレームを入れる
         try:
             frame_queue.put(out_np, block=False)
         except queue.Full:
             try:
-                frame_queue.get_nowait()  # 先頭の古いフレームを破棄
+                frame_queue.get_nowait()
             except queue.Empty:
                 pass
             frame_queue.put(out_np, block=False)
@@ -347,10 +356,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 # ──────────────────────────────
 # 中間フレームを生成する関数（軽量なベクトル演算によるブレンド）
 def generate_transition_frame(frame_a, frame_b, t):
-    """
-    frame_a, frame_b: uint8 の numpy 配列（H×W×3）
-    t: 0～1 の補間パラメータ（t=0 で frame_a、t=1 で frame_b）
-    """
     fa = frame_a.astype(np.float32)
     fb = frame_b.astype(np.float32)
     linear_blend = (1 - t) * fa + t * fb
@@ -365,15 +370,10 @@ def generate_transition_frame(frame_a, frame_b, t):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 # ──────────────────────────────
-# 【新規】 改行済みテキスト行リストを用いてオーバーレイ画像を生成する関数
+# 【新規】 テキストオーバーレイ画像を生成する関数
+# 今回は、上部に日本語、下部に英語のテキストを描画し、両者を包む全体テキストボックスが画面中央になるようにする。
+# 日本語と英語の間は、フォントサイズで算出した1行分の高さの隙間を空けます。
 def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
-    """
-    frame_shape: (H, W, ...) のタプル
-    texts: {"en": [行1, 行2, ...], "ja": [行1, 行2, ...]} の辞書（各言語とも既に改行済み）
-    font_scale: フォントサイズのスケール
-    thickness: テキストの縁取りの太さ
-    font_path: フォントファイルのパス
-    """
     h, w = frame_shape[:2]
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -383,65 +383,50 @@ def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
         print("フォント読み込みエラー:", e)
         font = ImageFont.load_default()
 
-    en_lines = texts.get("en", [])
+    # 取得するテキスト（日本語＝上部、英語＝下部）
     ja_lines = texts.get("ja", [])
-    gap = 5
+    en_lines = texts.get("en", [])
 
-    # 英文ブロックの高さ計算
-    en_block_h = sum(get_text_size(font, line)[1] for line in en_lines) + (len(en_lines)-1)*gap if en_lines else 0
-    # 日本語ブロックの高さ計算
-    ja_block_h = sum(get_text_size(font, line)[1] for line in ja_lines) + (len(ja_lines)-1)*gap if ja_lines else 0
+    # １行分の高さ（テキスト間の隙間として使用）
+    default_line_height = get_text_size(font, "A")[1]
 
-    top_region_center = h // 4
-    bottom_region_center = h * 3 // 4
-    en_y0 = top_region_center - en_block_h // 2
-    ja_y0 = bottom_region_center - ja_block_h // 2
+    # 各ブロックの高さ（各行の高さの和 ※行間は詰める）
+    ja_block_height = sum(get_text_size(font, line)[1] for line in ja_lines) if ja_lines else 0
+    en_block_height = sum(get_text_size(font, line)[1] for line in en_lines) if en_lines else 0
 
-    # 英文を中央寄せで描画
-    y = en_y0
-    for line in en_lines:
-        line_w, line_h = get_text_size(font, line)
-        x = (w - line_w) // 2
-        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255),
-                  stroke_width=thickness, stroke_fill="black")
-        y += line_h + gap
+    # 両ブロックを合わせた全体の高さ。両方存在する場合は、間隔として1行分の高さを追加。
+    combined_height = ja_block_height + (default_line_height if ja_lines and en_lines else 0) + en_block_height
 
-    # 日本語を中央寄せで描画
-    y = ja_y0
+    start_y = (h - combined_height) // 2
+
+    # Draw 日本語ブロック（上部）
+    y = start_y
     for line in ja_lines:
         line_w, line_h = get_text_size(font, line)
         x = (w - line_w) // 2
         draw.text((x, y), line, font=font, fill=(255, 255, 255, 255),
                   stroke_width=thickness, stroke_fill="black")
-        y += line_h + gap
+        y += line_h
 
-    overlay_np = np.array(overlay)
-    return overlay_np
+    # 間隔（両ブロックが存在する場合のみ）
+    if ja_lines and en_lines:
+        y += default_line_height
 
-# ──────────────────────────────
-# 【新規】 オーバーレイ画像とフレームをブレンドする関数
-def blend_overlay(frame, overlay):
-    """
-    frame: BGR (uint8) の NumPy 配列
-    overlay: RGBA (uint8) のオーバーレイ画像
-    """
-    frame_bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA).astype(np.float32)
-    overlay_float = overlay.astype(np.float32)
-    alpha = overlay_float[:, :, 3:4] / 255.0
-    blended = frame_bgra.copy()
-    blended[:, :, :3] = frame_bgra[:, :, :3] * (1 - alpha) + overlay_float[:, :, :3] * alpha
-    blended_bgr = cv2.cvtColor(blended.astype(np.uint8), cv2.COLOR_BGRA2BGR)
-    return blended_bgr
+    # Draw 英語ブロック（下部）
+    for line in en_lines:
+        line_w, line_h = get_text_size(font, line)
+        x = (w - line_w) // 2
+        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255),
+                  stroke_width=thickness, stroke_fill="black")
+        y += line_h
+
+    return np.array(overlay)
 
 # ──────────────────────────────
-# 【新規】 動画フレームをスクリーン解像度に合わせて横幅にフィットさせ、アスペクト比を保つために上下に黒帯（レターボックス）を追加する関数
+# 【新規】 動画フレームを画面解像度に合わせたレターボックス画像に変換する関数
+# 横幅を画面幅に合わせ、生成フレームの高さが足りない場合は上下に黒帯を、
+# 高すぎる場合は中央部をクロップして最終的な出力サイズが (target_width, target_height) になるようにする。
 def letterbox_frame(frame, target_width, target_height):
-    """
-    frame: BGR (uint8) の画像
-    target_width: 目標の横幅
-    target_height: 目標の高さ
-    ※動画の横幅を target_width に合わせ、縦方向はアスペクト比を維持して上下に純粋な黒帯を追加
-    """
     orig_h, orig_w = frame.shape[:2]
     scale_factor = target_width / orig_w
     new_h = int(orig_h * scale_factor)
@@ -451,12 +436,16 @@ def letterbox_frame(frame, target_width, target_height):
         pad_bottom = target_height - new_h - pad_top
         padded_frame = cv2.copyMakeBorder(resized_frame, pad_top, pad_bottom, 0, 0,
                                           cv2.BORDER_CONSTANT, value=[0, 0, 0])
+        return padded_frame
+    elif new_h > target_height:
+        offset = (new_h - target_height) // 2
+        cropped_frame = resized_frame[offset: offset + target_height, :]
+        return cropped_frame
     else:
-        padded_frame = resized_frame
-    return padded_frame
+        return resized_frame
 
 # ──────────────────────────────
-# Click オプション（各種パラメータは STYLEGAN_CONFIG をデフォルトに）
+# Click オプション
 @click.command()
 @click.option('--out-dir', type=str, default=STYLEGAN_CONFIG['out_dir'], help="output directory")
 @click.option('--model', type=str, default=STYLEGAN_CONFIG['model'], help="path to pkl checkpoint file")
@@ -515,19 +504,11 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         sg_gpu, font_scale, font_thickness, text_lines, num_displays, transition):
     """
     StyleGAN3 によるリアルタイム映像生成と、事前に GPT により生成・翻訳したテキストを組み合わせ、
-    映像上に英語（上半分）と日本語訳（下半分）でオーバーレイ表示します。
-
-    起動時に指定行数分のテキストを生成し、log フォルダに日付名のフォルダを作成して出力を保存します。
-    また、GPU の制約により StyleGAN の生成フレームは約10fpsですが、前後フレームのブレンドにより
-    中間フレームを生成して約30fpsに見せるアニメーション遷移処理を、--transition/--no-transition で指定できます。
-
-    さらに、事前生成時にテキストの描画領域からはみ出るかを判定して改行済みテキストを保存することで、
-    オーバーレイ時の重い改行計算を省いてリアルタイム性を追求します。
-
-    【追加改善点】
-    - 出力ウィンドウ数（1 または 2）を指定可能
-    - 各ウィンドウはフルスクリーン・モード（ウィンドウ枠やタスクバー等の OS UI を非表示）で表示
-    - 動画の横幅に合わせたレターボックス処理により、アスペクト比を維持しつつ上下は純粋な黒帯（動画以外の情報を一切表示しない）に
+    映像上に日本語（上部）と英語（下部）のテキストをオーバーレイ表示します。
+    両者を包むテキストボックスが画面全体の中央に配置され、両ブロックの間は1行分の隙間があります。
+    また、出力ウィンドウはフルスクリーン・モード（ウィンドウ枠やタスクバー等の OS UI を非表示）で、
+    動画の横幅に合わせたレターボックス処理により、上下は完全に黒く埋められます。
+    出力ウィンドウ数は --num-displays で1または2を指定できます。
     """
     try:
         if "-" in size:
@@ -588,7 +569,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         "font_thickness": font_thickness
     }
 
-    # 事前に GPT でテキストを生成し、ログ出力フォルダを作成する
     log_base = "log"
     os.makedirs(log_base, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -597,7 +577,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
     gpt_device = torch.device(gpt_gpu if torch.cuda.is_available() else "cpu")
     print("事前にテキストを生成中...")
-    # 画面の横幅は size_parsed[1]、font_scale と font_path は各パラメータから取得
     pre_generated_texts = pre_generate_text_lines(
         gpt_model, gpt_prompt, max_new_tokens, context_length,
         gpt_device, text_lines, log_dir,
@@ -607,7 +586,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     )
     print("テキストの事前生成完了。")
 
-    # StyleGAN3 用フレーム生成スレッド開始
     frame_queue = queue.Queue(maxsize=30)
     stop_event = threading.Event()
     gan_thread = threading.Thread(target=stylegan_frame_generator,
@@ -615,34 +593,22 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                                   daemon=True)
     gan_thread.start()
 
-    # --- 表示ウィンドウの設定 ---
     print("リアルタイムプレビュー開始（'q' キーで終了）")
-    # tkinter でスクリーン解像度を取得（tkinter が利用できない場合はデフォルト値を設定）
-    if tk is not None:
-        root = tk.Tk()
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        root.destroy()
-    else:
-        # 例: 1920x1080 とする
-        screen_width = 1920
-        screen_height = 1080
-        print("tkinter が利用できなかったため、デフォルトの解像度 1920x1080 を使用します。")
+    # 可能であれば screeninfo で取得した実解像度を使用
+    screen_width = actual_screen_width
+    screen_height = actual_screen_height
 
-    # 出力ウィンドウを num_displays 個作成し、各ウィンドウをフルスクリーン（ウィンドウ枠・タスクバー非表示）で設定
+    # 出力ウィンドウの作成（フルスクリーン・モード）
     window_names = []
     for i in range(num_displays):
         win_name = f"Display {i+1}"
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
         cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         window_names.append(win_name)
-    # 2画面の場合、各ウィンドウの位置調整（必要に応じて環境に合わせて調整してください）
     if num_displays == 2:
         cv2.moveWindow(window_names[0], 0, 0)
         cv2.moveWindow(window_names[1], screen_width, 0)
-    # --- 表示ウィンドウ設定ここまで ---
 
-    # 定期実行用の変数設定
     last_context_reinit_time = time.time()
     context_reinit_interval = 300
     last_gc_time = time.time()
@@ -656,11 +622,9 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     display_interval_ms = 33  # 約30fps
     stylegan_interval = 0.1     # StyleGAN3 のフレーム間隔（約10fps）
 
-    # テキスト表示用の変数
     current_text_idx = 0
     text_visible = True
     last_text_change = time.time()
-    # オーバーレイ画像キャッシュ用変数
     current_overlay = None
     current_text = None
 
@@ -676,7 +640,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
         if now - last_context_reinit_time >= context_reinit_interval:
             cv2.destroyAllWindows()
-            # ウィンドウ再作成（完全フルスクリーンで再表示）
             for win in window_names:
                 cv2.namedWindow(win, cv2.WINDOW_NORMAL)
                 cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -701,7 +664,6 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         else:
             disp_frame = curr_frame
 
-        # テキスト表示のオン／オフ（display_time, clear_time に基づく）
         if text_visible and now - last_text_change >= display_time:
             text_visible = False
             last_text_change = now
@@ -710,26 +672,24 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             text_visible = True
             last_text_change = now
 
-        # 表示するテキスト：テキスト非表示の場合は空のリストを設定
         if text_visible:
             new_text = pre_generated_texts[current_text_idx]
         else:
             new_text = {"en": [], "ja": []}
 
-        # テキスト内容が変わった場合のみオーバーレイ画像を再生成
         if new_text != current_text:
             current_text = new_text
             current_overlay = create_text_overlay(disp_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
 
         if current_overlay is not None:
+            frame_with_text = cv2.cvtColor(disp_frame.copy(), cv2.COLOR_BGR2RGB)
             frame_with_text = blend_overlay(disp_frame.copy(), current_overlay)
         else:
             frame_with_text = disp_frame.copy()
 
-        # フレームをスクリーン解像度に合わせたレターボックス画像に変換（上下は純粋な黒で埋める）
+        # レターボックス処理：横幅を画面幅に合わせ、高さが足りなければ上下に黒帯、超えていれば中央をクロップ
         letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
 
-        # 各ウィンドウに画像を表示（ウィンドウはフルスクリーン・モードなので、動画以外の情報は表示されません）
         for win in window_names:
             cv2.imshow(win, letterboxed_frame)
 
