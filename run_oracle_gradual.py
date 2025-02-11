@@ -440,6 +440,8 @@ def letterbox_frame(frame, target_width, target_height):
 @click.option('--text-lines', type=int, default=10, help="Number of text lines to pre-generate")
 @click.option('--num-displays', type=int, default=1, help="Number of output display windows (1 or 2)")
 @click.option('--transition/--no-transition', default=True, help="Enable transition interpolation for smoother frame rate (simulate 30fps)")
+@click.option('--fullscreen/--windowed', default=True, help="Use fullscreen mode if enabled; otherwise use window mode")
+
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method, chunk_size,
@@ -529,7 +531,9 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
     for i in range(num_displays):
         win_name = f"Display {i+1}"
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-        cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        # フルスクリーンの場合のみプロパティ設定を行う
+        if fullscreen:
+            cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         window_names.append(win_name)
     if num_displays == 2:
         cv2.moveWindow(window_names[0], 0, 0)

@@ -2,7 +2,7 @@ STYLEGAN_CONFIG = {
     "out_dir": "_out",
     "model": "models/embryo-stylegan3-r-network-snapshot-000096",
     "labels": None,
-    "size": "2778-1024",            # 出力解像度 (後で [height, width] に変換) "1920-708"
+    "size": "2496-920",            # 出力解像度 (後で [height, width] に変換) "1920-708"
     "scale_type": "pad",
     "latmask": None,
     "nXY": "1-1",                # latent blending 用：フレームの分割数（例："1-1"）
@@ -31,7 +31,7 @@ STYLEGAN_CONFIG = {
     "variations": 1,
     # 無限リアルタイム生成の方式
     "method": "smooth",       #"smooth" or "random_walk"
-    "chunk_size": 720,           #大きいほど変化がゆっくりに
+    "chunk_size": 1000,           #大きいほど変化がゆっくりに
     # ---- 以下、GPT 関連の設定 ----
     "gpt_model": "./models/gpt_model_epoch_16000.pth",
     "gpt_prompt": "I'm praying: ",
