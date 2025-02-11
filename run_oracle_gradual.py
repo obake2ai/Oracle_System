@@ -40,6 +40,12 @@ try:
 except ImportError:
     psutil = None
 
+# システムのスクリーン解像度を取得するため tkinter をインポート
+try:
+    import tkinter as tk
+except ImportError:
+    tk = None
+
 # API キーは config/api.py からインポート
 from config.api import OPENAI_API_KEY
 openai.api_key = OPENAI_API_KEY
@@ -428,6 +434,28 @@ def blend_overlay(frame, overlay):
     return blended_bgr
 
 # ──────────────────────────────
+# 【新規】 動画フレームをスクリーン解像度に合わせて横幅にフィットさせ、アスペクト比を保つために上下に黒帯（レターボックス）を追加する関数
+def letterbox_frame(frame, target_width, target_height):
+    """
+    frame: BGR (uint8) の画像
+    target_width: 目標の横幅
+    target_height: 目標の高さ
+    ※動画の横幅を target_width に合わせ、縦方向はアスペクト比を維持して上下に純粋な黒帯を追加
+    """
+    orig_h, orig_w = frame.shape[:2]
+    scale_factor = target_width / orig_w
+    new_h = int(orig_h * scale_factor)
+    resized_frame = cv2.resize(frame, (target_width, new_h))
+    if new_h < target_height:
+        pad_top = (target_height - new_h) // 2
+        pad_bottom = target_height - new_h - pad_top
+        padded_frame = cv2.copyMakeBorder(resized_frame, pad_top, pad_bottom, 0, 0,
+                                          cv2.BORDER_CONSTANT, value=[0, 0, 0])
+    else:
+        padded_frame = resized_frame
+    return padded_frame
+
+# ──────────────────────────────
 # Click オプション（各種パラメータは STYLEGAN_CONFIG をデフォルトに）
 @click.command()
 @click.option('--out-dir', type=str, default=STYLEGAN_CONFIG['out_dir'], help="output directory")
@@ -476,13 +504,15 @@ def blend_overlay(frame, overlay):
 @click.option('--font-thickness', type=int, default=STYLEGAN_CONFIG['default_font_thickness'], help="default font thickness for overlay text")
 # 事前生成するテキスト行数
 @click.option('--text-lines', type=int, default=10, help="Number of text lines to pre-generate")
+# 出力ウィンドウ数（1 または 2）
+@click.option('--num-displays', type=int, default=1, help="Number of output display windows (1 or 2)")
 # フレーム間トランジション処理のオン/オフ（デフォルトはオン）
 @click.option('--transition/--no-transition', default=True, help="Enable transition interpolation for smoother frame rate (simulate 30fps)")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method, chunk_size,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time,
-        sg_gpu, font_scale, font_thickness, text_lines, transition):
+        sg_gpu, font_scale, font_thickness, text_lines, num_displays, transition):
     """
     StyleGAN3 によるリアルタイム映像生成と、事前に GPT により生成・翻訳したテキストを組み合わせ、
     映像上に英語（上半分）と日本語訳（下半分）でオーバーレイ表示します。
@@ -493,6 +523,11 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
     さらに、事前生成時にテキストの描画領域からはみ出るかを判定して改行済みテキストを保存することで、
     オーバーレイ時の重い改行計算を省いてリアルタイム性を追求します。
+
+    【追加改善点】
+    - 出力ウィンドウ数（1 または 2）を指定可能
+    - 各ウィンドウはフルスクリーン・モード（ウィンドウ枠やタスクバー等の OS UI を非表示）で表示
+    - 動画の横幅に合わせたレターボックス処理により、アスペクト比を維持しつつ上下は純粋な黒帯（動画以外の情報を一切表示しない）に
     """
     try:
         if "-" in size:
@@ -580,9 +615,32 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                                   daemon=True)
     gan_thread.start()
 
+    # --- 表示ウィンドウの設定 ---
     print("リアルタイムプレビュー開始（'q' キーで終了）")
-    window_name = "StyleGAN3 + GPT Overlay"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    # tkinter でスクリーン解像度を取得（tkinter が利用できない場合はデフォルト値を設定）
+    if tk is not None:
+        root = tk.Tk()
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        root.destroy()
+    else:
+        # 例: 1920x1080 とする
+        screen_width = 1920
+        screen_height = 1080
+        print("tkinter が利用できなかったため、デフォルトの解像度 1920x1080 を使用します。")
+
+    # 出力ウィンドウを num_displays 個作成し、各ウィンドウをフルスクリーン（ウィンドウ枠・タスクバー非表示）で設定
+    window_names = []
+    for i in range(num_displays):
+        win_name = f"Display {i+1}"
+        cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        window_names.append(win_name)
+    # 2画面の場合、各ウィンドウの位置調整（必要に応じて環境に合わせて調整してください）
+    if num_displays == 2:
+        cv2.moveWindow(window_names[0], 0, 0)
+        cv2.moveWindow(window_names[1], screen_width, 0)
+    # --- 表示ウィンドウ設定ここまで ---
 
     # 定期実行用の変数設定
     last_context_reinit_time = time.time()
@@ -618,7 +676,10 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
         if now - last_context_reinit_time >= context_reinit_interval:
             cv2.destroyAllWindows()
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            # ウィンドウ再作成（完全フルスクリーンで再表示）
+            for win in window_names:
+                cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+                cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             last_context_reinit_time = now
             print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
 
@@ -665,8 +726,12 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         else:
             frame_with_text = disp_frame.copy()
 
-        frame_with_text = img_resize_for_cv2(frame_with_text)
-        cv2.imshow(window_name, frame_with_text)
+        # フレームをスクリーン解像度に合わせたレターボックス画像に変換（上下は純粋な黒で埋める）
+        letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
+
+        # 各ウィンドウに画像を表示（ウィンドウはフルスクリーン・モードなので、動画以外の情報は表示されません）
+        for win in window_names:
+            cv2.imshow(win, letterboxed_frame)
 
         fps_count += 1
         elapsed = time.time() - t0
