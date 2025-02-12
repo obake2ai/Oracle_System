@@ -7,6 +7,9 @@
 また、transition 機能では、StyleGAN3 の低fps出力から別スレッドで事前補間し、ピクセルごとに粒子状の dissolve 効果を与えた
 中間フレームを生成して、スムーズなアニメーション（約30fps相当）に変換します。
 さらに、--fullscreen/--windowed オプションで表示モードを切り替えられ、出力ウィンドウ数も選択可能です。
+
+今回の変更では、スクリーンが2台ある場合、生成したフレームを左右に分割し、
+左側をスクリーン1、右側をスクリーン2に全画面表示するようにしています。
 """
 
 import os
@@ -59,7 +62,6 @@ def get_total_screen_resolution():
 
 actual_screen_width, actual_screen_height = get_total_screen_resolution()
 if not actual_screen_width or not actual_screen_height:
-    # 万が一 xrandr で取得できなかった場合は tkinter によるフォールバック
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -564,7 +566,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                                         daemon=True)
         trans_thread.start()
     print("リアルタイムプレビュー開始（'q' キーで終了）")
-    # ここで、xrandr で取得した総解像度を利用する
+    # xrandr で取得した総解像度を利用
     screen_width = actual_screen_width
     screen_height = actual_screen_height
     window_names = []
@@ -574,9 +576,12 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         if fullscreen:
             cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         window_names.append(win_name)
+    # 2画面の場合はそれぞれのウィンドウをスクリーン上に配置
     if num_displays == 2:
+        # 1画面分の幅（例: 3840）が想定
+        half_width = screen_width // 2
         cv2.moveWindow(window_names[0], 0, 0)
-        cv2.moveWindow(window_names[1], 3840, 0)  # 右側の画面の開始座標（例: 3840,0）
+        cv2.moveWindow(window_names[1], half_width, 0)
     last_context_reinit_time = time.time()
     context_reinit_interval = 300
     last_gc_time = time.time()
@@ -626,8 +631,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         t = (time.time() - last_frame_update) / stylegan_interval
         if t > 1:
             t = 1.0
-        # transition が有効の場合は、既に補間済みのフレームを表示しているので
-        # メインループ側で重い補間処理は行わない
+        # transition が有効の場合は既に補間済みのフレームを使用
         disp_frame = curr_frame
         if text_visible and now - last_text_change >= display_time:
             text_visible = False
@@ -647,9 +651,21 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             frame_with_text = blend_overlay(disp_frame.copy(), current_overlay)
         else:
             frame_with_text = disp_frame.copy()
+        # letterbox_frame により、全体解像度（例: 7680x2160）に調整
         letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
-        for win in window_names:
-            cv2.imshow(win, letterboxed_frame)
+
+        # ★ ここが今回の変更点 ★
+        # 2画面の場合、letterboxed_frame を左右に分割して各ウィンドウに表示
+        if num_displays == 2:
+            half_width = screen_width // 2
+            left_frame = letterboxed_frame[:, :half_width, :]
+            right_frame = letterboxed_frame[:, half_width:, :]
+            cv2.imshow(window_names[0], left_frame)
+            cv2.imshow(window_names[1], right_frame)
+        else:
+            for win in window_names:
+                cv2.imshow(win, letterboxed_frame)
+
         fps_count += 1
         elapsed = time.time() - t0
         if elapsed >= 1.0:
