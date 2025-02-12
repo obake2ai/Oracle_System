@@ -28,6 +28,7 @@ import openai
 from PIL import Image, ImageDraw, ImageFont
 import datetime
 import gc
+import subprocess
 
 # psutil（メモリ監視用）
 try:
@@ -36,30 +37,39 @@ try:
 except ImportError:
     psutil = None
 
-# tkinter（スクリーン解像度取得のフォールバック用）
-try:
-    import tkinter as tk
-except ImportError:
-    tk = None
+# -------------------------------
+# xrandr の出力を利用して総解像度を取得する
+# -------------------------------
+def get_total_screen_resolution():
+    try:
+        # xrandr の出力例:
+        # "Screen 0: minimum 16 x 16, current 7680 x 2160, maximum 32767 x 32767"
+        output = subprocess.check_output("xrandr | grep 'Screen 0:'", shell=True).decode()
+        parts = output.split(',')
+        for part in parts:
+            if "current" in part:
+                tokens = part.strip().split()
+                # tokens[1] と tokens[3] にそれぞれ幅と高さが入っている前提
+                width = int(tokens[1])
+                height = int(tokens[3])
+                return width, height
+    except Exception as e:
+        print("xrandr から解像度取得エラー:", e)
+        return None, None
 
-# 可能なら screeninfo で実際のモニター解像度を取得
-try:
-    from screeninfo import get_monitors
-    monitors = get_monitors()
-    if monitors:
-        actual_screen_width = monitors[0].width
-        actual_screen_height = monitors[0].height
-    else:
-        raise Exception("No monitors found")
-except Exception as e:
-    if tk is not None:
+actual_screen_width, actual_screen_height = get_total_screen_resolution()
+if not actual_screen_width or not actual_screen_height:
+    # 万が一 xrandr で取得できなかった場合は tkinter によるフォールバック
+    try:
+        import tkinter as tk
         root = tk.Tk()
         actual_screen_width = root.winfo_screenwidth()
         actual_screen_height = root.winfo_screenheight()
         root.destroy()
-    else:
+    except Exception as e:
         actual_screen_width, actual_screen_height = 1920, 1080
-        print("screeninfo, tkinter どちらも利用できなかったため、デフォルトの解像度 1920x1080 を使用します。")
+        print("xrandr, tkinter どちらも利用できなかったため、デフォルトの解像度 1920x1080 を使用します。")
+print(f"総解像度: {actual_screen_width}x{actual_screen_height}")
 
 from config.api import OPENAI_API_KEY
 openai.api_key = OPENAI_API_KEY
@@ -75,7 +85,6 @@ text_lock = threading.Lock()
 # -------------------------------
 # 各種ユーティリティ関数
 # -------------------------------
-
 def get_text_size(font, text):
     bbox = font.getbbox(text)
     width = bbox[2] - bbox[0]
@@ -555,6 +564,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                                         daemon=True)
         trans_thread.start()
     print("リアルタイムプレビュー開始（'q' キーで終了）")
+    # ここで、xrandr で取得した総解像度を利用する
     screen_width = actual_screen_width
     screen_height = actual_screen_height
     window_names = []
@@ -566,7 +576,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         window_names.append(win_name)
     if num_displays == 2:
         cv2.moveWindow(window_names[0], 0, 0)
-        cv2.moveWindow(window_names[1], screen_width, 0)
+        cv2.moveWindow(window_names[1], 3840, 0)  # 右側の画面の開始座標（例: 3840,0）
     last_context_reinit_time = time.time()
     context_reinit_interval = 300
     last_gc_time = time.time()
