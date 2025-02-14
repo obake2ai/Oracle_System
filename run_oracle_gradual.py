@@ -572,14 +572,18 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             try:
                 while True:
                     new_frame = frame_queue.get_nowait()
-                    prev_frame = curr_frame.copy()
+                    prev_frame = curr_frame  # 必要なら前のフレームは保持
                     curr_frame = new_frame
                     last_frame_update = time.time()
+                # キューが空なら抜ける
             except queue.Empty:
                 pass
+
             t = (time.time() - last_frame_update) / stylegan_interval
             if t > 1:
                 t = 1.0
+
+            # テキスト表示のON/OFFのタイミングはそのまま
             if text_visible and now - last_text_change >= display_time:
                 text_visible = False
                 last_text_change = now
@@ -587,19 +591,29 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 current_text_idx = (current_text_idx + 1) % len(pre_generated_texts)
                 text_visible = True
                 last_text_change = now
+
+            # 表示すべきテキストを決定
             if text_visible:
                 new_text = pre_generated_texts[current_text_idx]
             else:
                 new_text = {"en": [], "ja": []}
-            if new_text != current_text:
+
+            # 既存のキャッシュ（current_overlay）が存在し、かつフレームサイズが変わっていなければ再生成しない
+            if new_text != current_text or current_overlay is None or current_overlay.shape[:2] != curr_frame.shape[:2]:
                 current_text = new_text
                 current_overlay = create_text_overlay(curr_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
+
+            # blend_overlay 内で変換・コピーを実施しているため、ここではそのまま curr_frame を渡す
             if current_overlay is not None:
-                frame_with_text = blend_overlay(curr_frame.copy(), current_overlay)
+                frame_with_text = blend_overlay(curr_frame, current_overlay)
             else:
-                frame_with_text = curr_frame.copy()
+                frame_with_text = curr_frame
+
+            # その後、letterbox_frame 等の処理はそのまま
             letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
             cv2.imshow(window_name, letterboxed_frame)
+
+            # fps計測やキー入力処理はそのまま
             fps_count += 1
             elapsed = time.time() - t0
             if elapsed >= 1.0:
@@ -611,6 +625,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 print("\n終了します。")
                 stop_event.set()
                 break
+
         cv2.destroyAllWindows()
     finally:
         # プロファイリング終了時、累積時間が閾値以上の関数のみを表示する
