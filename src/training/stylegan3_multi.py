@@ -31,33 +31,34 @@ def make_transform_batch(shifts, angles, scales, invert=False):
     """
     shifts: tensor-like of shape [B, 2]
     angles: tensor-like of shape [B] (in degrees)
-    scales: tensor-like of shape [B, 2] or [B, 1] or [B]
-            (if only one value is provided per sample, isotropic scaling is assumed)
+    scales: tensor-like that should contain 2 values per sample.
+            It can have shape [B], [B,1], [B,2], or higher dims; in the latter case, the first two values are used.
     Returns:
       transforms: [B, 3, 3]
     """
-    # 入力を torch.Tensor に変換（dtype は float32 に統一）
+    # 入力を torch.Tensor に変換（dtype は float32）
     shifts = torch.as_tensor(shifts, dtype=torch.float32)
     angles = torch.as_tensor(angles, dtype=torch.float32)
     scales = torch.as_tensor(scales, dtype=torch.float32)
 
-    # shifts が 1 次元の場合、[B] から [B, 2] にリシェイプ
+    # shifts が 1 次元の場合、[B] -> [B,2] にリシェイプ
     if shifts.dim() == 1:
         shifts = shifts.view(-1, 2)
-    # scales が 1 次元の場合、[B] -> [B,1]
-    if scales.dim() == 1:
+    # scales の次元をバッチサイズ以外にまとめる
+    if scales.dim() > 2:
+        scales = scales.contiguous().view(scales.size(0), -1)
+    elif scales.dim() == 1:
         scales = scales.view(-1, 1)
-    # scales が 3 次元以上の場合は、[B, ...] -> [B, N]
-    elif scales.dim() > 2:
-        scales = scales.view(scales.size(0), -1)
-    # scales の第2次元が 1 なら同じ値を複製して [B,2] にする
-    if scales.size(1) == 1:
+    # 各サンプルで 2 つの値がなければ、2 つに拡張；余分な次元があれば先頭2個を採用
+    if scales.size(1) < 2:
         scales = scales.repeat(1, 2)
+    elif scales.size(1) > 2:
+        scales = scales[:, :2]
 
     B = shifts.shape[0]
     device = shifts.device
-    # [B, 3, 3] の単位行列を作成
-    m = torch.eye(3, device=device).unsqueeze(0).expand(B, 3, 3)
+    # 単位行列を作成し、clone() で独立したメモリにする
+    m = torch.eye(3, device=device).unsqueeze(0).expand(B, 3, 3).clone()  # [B,3,3]
 
     pi = np.pi
     s = torch.sin(angles / 360.0 * pi * 2)  # [B]
@@ -73,6 +74,7 @@ def make_transform_batch(shifts, angles, scales, invert=False):
     if invert:
         m = torch.inverse(m)
     return m
+
 
 
 #---------------------------------------------------------------------------
