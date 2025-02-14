@@ -4,8 +4,8 @@
 """
 このコードは、StyleGAN3 によるリアルタイム映像生成と GPT によるテキスト生成＋翻訳を組み合わせ、
 映像上に日本語（上部、半透明）と英語（下部、半透明）のテキストをオーバーレイ表示します。
-また、--debug オプションを指定すると、cProfile によるボトルネックのプロファイリングを実行し、
-終了時に統計情報を表示します。
+また、--debug オプションを指定すると、cProfile によるボトルネックのプロファイリングを実施し、
+終了時に累積時間が一定以上（ここでは 0.1 秒以上）の関数のみを表示します。
 """
 
 import os
@@ -613,14 +613,19 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 break
         cv2.destroyAllWindows()
     finally:
-        # プロファイリング終了時、統計情報を表示
+        # プロファイリング終了時、累積時間が閾値以上の関数のみを表示する
         if profiler is not None:
             profiler.disable()
-            s = io.StringIO()
-            ps = pstats.Stats(profiler, stream=s).sort_stats("cumtime")
-            ps.print_stats()
-            print("\n=== プロファイリング結果 ===")
-            print(s.getvalue())
+            ps = pstats.Stats(profiler)
+            ps.strip_dirs().sort_stats("cumtime")
+            threshold = 0.1  # 0.1秒以上かかった関数のみ表示（必要に応じて調整）
+            print("\n=== プロファイリング結果 (累積時間が {:.3f} 秒以上の関数のみ) ===".format(threshold))
+            sorted_stats = sorted(ps.stats.items(), key=lambda x: x[1][3], reverse=True)
+            for func, stat in sorted_stats:
+                cc, nc, tt, ct, callers = stat
+                if ct >= threshold:
+                    func_desc = f"{func[0]}:{func[1]}({func[2]})"
+                    print(f"{func_desc:60s}  Call Count: {nc:4d}  Total Time: {tt:8.6f}  Cumulative Time: {ct:8.6f}")
 
 if __name__ == '__main__':
     cli()
