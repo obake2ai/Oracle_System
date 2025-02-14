@@ -191,20 +191,16 @@ def blend_overlay(frame, overlay):
 # -------------------------------
 # StyleGAN3 フレーム生成スレッド
 # -------------------------------
-def stylegan_frame_generator(frame_queue, stop_event, config_args, batch_size=4):
+def stylegan_frame_generator(frame_queue, stop_event, config_args):
     device = torch.device(config_args["stylegan_gpu"])
     noise_seed = config_args["noise_seed"]
     torch.manual_seed(noise_seed)
     np.random.seed(noise_seed)
     random.seed(noise_seed)
     os.makedirs(config_args["out_dir"], exist_ok=True)
-
-    # StyleGAN3 に渡す追加パラメータ
     Gs_kwargs = dnnlib.EasyDict()
     for key in ["verbose", "size", "scale_type"]:
         Gs_kwargs[key] = config_args[key]
-
-    # latmask の初期化
     if config_args["latmask"] is None:
         nxy = config_args["nXY"]
         nHW = [int(s) for s in nxy.split('-')][::-1]
@@ -217,18 +213,18 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args, batch_size=4)
         Gs_kwargs.splitfine = config_args["splitfine"]
         lmask = [None]
     else:
+        n_mult = 2
+        nHW = [1, 1]
         if osp.isfile(config_args["latmask"]):
             lmask = np.asarray([[img_read(config_args["latmask"])[:,:,0] / 255.]])
         elif osp.isdir(config_args["latmask"]):
             lmask = np.expand_dims(np.asarray([img_read(f)[:,:,0] / 255. for f in img_list(config_args["latmask"])]), 1)
         else:
-            print(' !! Blending mask not found:', config_args["latmask"])
-            exit(1)
+            print(' !! Blending mask not found:', config_args["latmask"]); exit(1)
         if config_args["verbose"]:
             print(' Latent blending with mask', config_args["latmask"], lmask.shape)
         lmask = np.concatenate((lmask, 1 - lmask), 1)
         lmask = torch.from_numpy(lmask).to(device)
-
     frames_val, fstep_val = [int(x) for x in config_args["frames"].split('-')]
     model_path = config_args["model"]
     pkl_name = os.path.splitext(model_path)[0]
@@ -244,45 +240,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args, batch_size=4)
         label[0, label_idx] = 1
     else:
         label = None
-
-    # 初期化（ダミー入力によるウォームアップ）
-    if hasattr(Gs.synthesis, 'input'):
-        first_layer_channels = Gs.synthesis.input.channels
-        first_layer_size = Gs.synthesis.input.size
-        if isinstance(first_layer_size, (list, tuple, np.ndarray)):
-            h, w = first_layer_size[0], first_layer_size[1]
-        else:
-            h, w = first_layer_size, first_layer_size
-        shape_for_dconst = [1, first_layer_channels, h, w]
-        if config_args["digress"] != 0:
-            dconst_list_init = []
-            for i in range(n_mult):
-                dc_tmp = config_args["digress"] * latent_anima(shape_for_dconst, frames_val, fstep_val,
-                                                                 cubic=True, seed=noise_seed, verbose=False)
-                dconst_list_init.append(dc_tmp)
-            dconst = np.concatenate(dconst_list_init, axis=1)
-        else:
-            dconst = np.zeros([1, 1, first_layer_channels, h, w])
-        dconst = torch.from_numpy(dconst).to(device).to(torch.float32)
-    else:
-        dconst = None
-
-    with torch.no_grad():
-        if custom and hasattr(Gs.synthesis, 'input'):
-            dummy_trans_param = (torch.zeros([1, 2], device=device),
-                                 torch.zeros([1, 1], device=device),
-                                 torch.ones([1, 2], device=device))
-            _ = Gs(torch.randn([1, z_dim], device=device), label,
-                   lmask[0] if lmask is not None else None,
-                   dummy_trans_param,
-                   dconst[0] if dconst is not None else None,
-                   noise_mode='const')
-        else:
-            _ = Gs(torch.randn([1, z_dim], device=device), label,
-                   truncation_psi=config_args["trunc"],
-                   noise_mode='const')
-
-    # 補助パラメータのバッチ対応準備
     if hasattr(Gs.synthesis, 'input'):
         if config_args["anim_trans"]:
             hw_centers = [np.linspace(-1 + 1/n, 1 - 1/n, n) for n in nHW]
@@ -297,7 +254,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args, batch_size=4)
         else:
             shifts = np.zeros((1, n_mult, 2))
         if config_args["anim_rot"]:
-            angles = latent_anima((n_mult, 1), frames_val, frames_val // 4, uniform=True,
+            angles = latent_anima((n_mult, 1), frames_val, frames_val//4, uniform=True,
                                   cubic=config_args["cubic"], gauss=config_args["gauss"],
                                   seed=noise_seed, verbose=False)
             angles = (angles - 0.5) * 180.
@@ -311,13 +268,41 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args, batch_size=4)
         trans_params = list(zip(shifts, angles, scales))
     else:
         trans_params = None
-
+    if hasattr(Gs.synthesis, 'input'):
+        first_layer_channels = Gs.synthesis.input.channels
+        first_layer_size = Gs.synthesis.input.size
+        if isinstance(first_layer_size, (list, tuple, np.ndarray)):
+            h, w = first_layer_size[0], first_layer_size[1]
+        else:
+            h, w = first_layer_size, first_layer_size
+        shape_for_dconst = [1, first_layer_channels, h, w]
+        if config_args["digress"] != 0:
+            dconst_list = []
+            for i in range(n_mult):
+                dc_tmp = config_args["digress"] * latent_anima(shape_for_dconst, frames_val, fstep_val,
+                                                                 cubic=True, seed=noise_seed, verbose=False)
+                dconst_list.append(dc_tmp)
+            dconst = np.concatenate(dconst_list, axis=1)
+        else:
+            dconst = np.zeros([shifts.shape[0], 1, first_layer_channels, h, w])
+        dconst = torch.from_numpy(dconst).to(device).to(torch.float32)
+    else:
+        dconst = None
+    with torch.no_grad():
+        if custom and hasattr(Gs.synthesis, 'input'):
+            dummy_trans_param = (torch.zeros([1,2], device=device),
+                                 torch.zeros([1,1], device=device),
+                                 torch.ones([1,2], device=device))
+            _ = Gs(torch.randn([1, z_dim], device=device), label, lmask[0] if lmask is not None else None,
+                   dummy_trans_param, dconst[0] if dconst is not None else None, noise_mode='const')
+        else:
+            _ = Gs(torch.randn([1, z_dim], device=device), label,
+                   truncation_psi=config_args["trunc"], noise_mode='const')
     frame_idx_local = 0
     frame_idx = 0
     if config_args["method"] == "random_walk":
         print("random")
-        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device,
-                                                   seed=noise_seed, step_size=0.02)
+        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=0.02)
     else:
         print("smooth")
         latent_gen = infinite_latent_smooth(z_dim=z_dim, device=device,
@@ -326,54 +311,29 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args, batch_size=4)
                                             seed=noise_seed,
                                             chunk_size=config_args["chunk_size"],
                                             uniform=False)
-
     while not stop_event.is_set():
-        # バッチ分 latent と各補助パラメータを収集
-        latent_list = []
-        latmask_list = []
-        trans_param_list = []
-        dconst_list = []
-        for _ in range(batch_size):
-            z_current = next(latent_gen)  # shape: [1, z_dim]
-            latent_list.append(z_current)
-            if custom and hasattr(Gs.synthesis, 'input'):
-                latmask_i = lmask[frame_idx_local % len(lmask)] if lmask is not None else None
-                trans_param_i = trans_params[frame_idx % len(trans_params)] if trans_params is not None else None
-                dconst_i = dconst[frame_idx % dconst.shape[0]] if dconst is not None else None
-            else:
-                latmask_i = None
-                trans_param_i = None
-                dconst_i = None
-            latmask_list.append(latmask_i)
-            trans_param_list.append(trans_param_i)
-            dconst_list.append(dconst_i)
-            frame_idx_local += 1
-            frame_idx += 1
-
-        # バッチとしてまとめる
-        latent_batch = torch.cat(latent_list, dim=0)  # shape: [batch_size, z_dim]
-        if label is not None:
-            label_batch = label.repeat(batch_size, 1)
-        else:
-            label_batch = None
-
+        z_current = next(latent_gen)
         with torch.no_grad():
             if custom and hasattr(Gs.synthesis, 'input'):
-                out = Gs(latent_batch, label_batch,
-                         latmask_list, trans_param_list, dconst_list,
-                         truncation_psi=config_args["trunc"],
-                         noise_mode='const')
+                latmask = lmask[frame_idx_local % len(lmask)] if lmask is not None else None
+                dconst_current = dconst[frame_idx % dconst.shape[0]] if dconst is not None else None
+                trans_param = trans_params[frame_idx % len(trans_params)] if trans_params is not None else None
+                out = Gs(z_current, label, latmask, trans_param, dconst_current,
+                         truncation_psi=config_args["trunc"], noise_mode='const')
             else:
-                out = Gs(latent_batch, label_batch,
-                         None, truncation_psi=config_args["trunc"],
-                         noise_mode='const')
-
-        # out はバッチ分の画像。各画像を個別にキューに追加
-        for i in range(out.shape[0]):
-            # 変換：出力テンソルの形状は [C, H, W] を想定（必要に応じて修正）
-            frame = (out[i].permute(1, 2, 0).cpu().numpy()[..., ::-1]).astype(np.uint8)
-            frame_queue.put(frame, block=True)
-
+                out = Gs(z_current, label, None, truncation_psi=config_args["trunc"], noise_mode='const')
+        out = (out.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
+        out_np = out[0].cpu().numpy()[..., ::-1]
+        try:
+            frame_queue.put(out_np, block=False)
+        except queue.Full:
+            try:
+                frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+            frame_queue.put(out_np, block=False)
+        frame_idx_local += 1
+        frame_idx += 1
 
 # -------------------------------
 # create_text_overlay: テキストオーバーレイ画像生成（透過度付き）
@@ -476,7 +436,7 @@ def letterbox_frame(frame, target_width, target_height):
 @click.option('--clear-time', type=float, default=STYLEGAN_CONFIG['clear_time'], help="clear time for text (seconds)")
 @click.option('--font-scale', type=float, default=STYLEGAN_CONFIG['default_font_scale'], help="default font scale for overlay text")
 @click.option('--font-thickness', type=int, default=STYLEGAN_CONFIG['default_font_thickness'], help="default font thickness for overlay text")
-@click.option('--text-lines', type=int, default=3, help="Number of text lines to pre-generate")
+@click.option('--text-lines', type=int, default=10, help="Number of text lines to pre-generate")
 @click.option('--debug', is_flag=True, default=False, help="Enable profiling of bottlenecks")
 @click.option('--fullscreen/--windowed', default=True, help="Use fullscreen mode if enabled; otherwise use window mode")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
