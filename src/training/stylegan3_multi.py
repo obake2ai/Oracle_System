@@ -31,14 +31,18 @@ def make_transform_batch(shifts: torch.Tensor, angles: torch.Tensor, scales: tor
     """
     shifts: [B, 2]
     angles: [B]        (in degrees)
-    scales: [B, 2] or [B, 1] or [B] (if only one value is provided per sample, isotropic scaling is assumed)
+    scales: [B, 2] or [B, 1] or [B]
+        (if only one value is provided per sample, isotropic scaling is assumed)
     Returns:
       transforms: [B, 3, 3]
     """
     # scales が 1 次元の場合は [B] -> [B,1] に変換
     if scales.dim() == 1:
-        scales = scales.unsqueeze(1)
-    # scales の第2次元が 1 なら、同じ値を2回複製して [B,2] にする
+        scales = scales.view(-1, 1)
+    # scales が 3 次元以上の場合は、最初の次元以外をフラット化して [B, N] にする
+    elif scales.dim() > 2:
+        scales = scales.view(scales.size(0), -1)
+    # 第2次元が 1 の場合、同じ値を複製して [B,2] にする
     if scales.size(1) == 1:
         scales = scales.repeat(1, 2)
 
