@@ -4,8 +4,8 @@
 """
 このコードは、StyleGAN3 によるリアルタイム映像生成と GPT によるテキスト生成＋翻訳を組み合わせ、
 映像上に日本語（上部、半透明）と英語（下部、半透明）のテキストをオーバーレイ表示します。
-なお、今回の変更では、複数ディスプレイ対応機能および transition 補間処理を削除し、
-単一ディスプレイでの表示のみを行います。
+また、--debug オプションを指定すると、cProfile によるボトルネックのプロファイリングを実行し、
+終了時に統計情報を表示します。
 """
 
 import os
@@ -28,6 +28,7 @@ from PIL import Image, ImageDraw, ImageFont
 import datetime
 import gc
 import subprocess
+import cProfile, pstats, io  # プロファイリング用モジュール
 
 # psutil（メモリ監視用）
 try:
@@ -41,14 +42,11 @@ except ImportError:
 # -------------------------------
 def get_total_screen_resolution():
     try:
-        # xrandr の出力例:
-        # "Screen 0: minimum 16 x 16, current 7680 x 2160, maximum 32767 x 32767"
         output = subprocess.check_output("xrandr | grep 'Screen 0:'", shell=True).decode()
         parts = output.split(',')
         for part in parts:
             if "current" in part:
                 tokens = part.strip().split()
-                # tokens[1] と tokens[3] にそれぞれ幅と高さが入っている前提
                 width = int(tokens[1])
                 height = int(tokens[3])
                 return width, height
@@ -439,172 +437,190 @@ def letterbox_frame(frame, target_width, target_height):
 @click.option('--font-scale', type=float, default=STYLEGAN_CONFIG['default_font_scale'], help="default font scale for overlay text")
 @click.option('--font-thickness', type=int, default=STYLEGAN_CONFIG['default_font_thickness'], help="default font thickness for overlay text")
 @click.option('--text-lines', type=int, default=10, help="Number of text lines to pre-generate")
+@click.option('--debug', is_flag=True, default=False, help="Enable profiling of bottlenecks")
 @click.option('--fullscreen/--windowed', default=True, help="Use fullscreen mode if enabled; otherwise use window mode")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method, chunk_size,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time,
-        sg_gpu, font_scale, font_thickness, text_lines, fullscreen):
+        sg_gpu, font_scale, font_thickness, text_lines, debug, fullscreen):
+    # プロファイリング開始（--debug オプションが有効な場合）
+    profiler = None
+    if debug:
+        profiler = cProfile.Profile()
+        profiler.enable()
+
     try:
-        if "-" in size:
-            w, h = size.split("-")
-        elif "x" in size:
-            w, h = size.split("x")
-        elif "X" in size:
-            w, h = size.split("X")
-        elif "," in size:
-            w, h = size.split(",")
-        else:
-            raise ValueError("Invalid size format")
-        size_parsed = [int(h), int(w)]
-    except Exception as e:
-        print("サイズのパースに失敗しました。例: 720x1280 の形式で指定してください。")
-        raise e
-    try:
-        if "-" in affine_scale:
-            a, b = affine_scale.split("-")
-            affine_parsed = [float(a), float(b)]
-        else:
-            affine_parsed = [1.0, 1.0]
-    except Exception as e:
-        print("affine_scale のパースに失敗しました。例: 1.0-1.0 の形式で指定してください。")
-        raise e
-    config_args = {
-        "out_dir": out_dir,
-        "model": model,
-        "labels": labels,
-        "size": size_parsed,
-        "scale_type": scale_type,
-        "latmask": latmask,
-        "nXY": nxy,
-        "splitfine": splitfine,
-        "splitmax": splitmax,
-        "trunc": trunc,
-        "save_lat": save_lat,
-        "verbose": verbose,
-        "noise_seed": noise_seed,
-        "frames": frames,
-        "cubic": cubic,
-        "gauss": gauss,
-        "anim_trans": anim_trans,
-        "anim_rot": anim_rot,
-        "shiftbase": shiftbase,
-        "shiftmax": shiftmax,
-        "digress": digress,
-        "affine_scale": affine_parsed,
-        "framerate": framerate,
-        "prores": prores,
-        "variations": variations,
-        "method": method,
-        "chunk_size": chunk_size,
-        "stylegan_gpu": sg_gpu,
-        "font_scale": font_scale,
-        "font_thickness": font_thickness
-    }
-    log_base = "log"
-    os.makedirs(log_base, exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = os.path.join(log_base, timestamp)
-    os.makedirs(log_dir, exist_ok=True)
-    gpt_device = torch.device(gpt_gpu if torch.cuda.is_available() else "cpu")
-    print("事前にテキストを生成中...")
-    pre_generated_texts = pre_generate_text_lines(
-        gpt_model, gpt_prompt, max_new_tokens, context_length,
-        gpt_device, text_lines, log_dir,
-        frame_width=size_parsed[1],
-        font_scale=font_scale,
-        font_path=STYLEGAN_CONFIG['font_path']
-    )
-    print("テキストの事前生成完了。")
-    frame_queue = queue.Queue(maxsize=30)
-    stop_event = threading.Event()
-    gan_thread = threading.Thread(target=stylegan_frame_generator,
-                                  args=(frame_queue, stop_event, config_args),
-                                  daemon=True)
-    gan_thread.start()
-    print("リアルタイムプレビュー開始（'q' キーで終了）")
-    # xrandr で取得した総解像度を利用
-    screen_width = actual_screen_width
-    screen_height = actual_screen_height
-    window_name = "Display"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    if fullscreen:
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    last_context_reinit_time = time.time()
-    context_reinit_interval = 300
-    last_gc_time = time.time()
-    gc_interval = 60
-    fps_count = 0
-    t0 = time.time()
-    curr_frame = frame_queue.get()  # blocking
-    prev_frame = curr_frame.copy()
-    last_frame_update = time.time()
-    display_interval_ms = 33
-    stylegan_interval = 0.1
-    current_text_idx = 0
-    text_visible = True
-    last_text_change = time.time()
-    current_overlay = None
-    current_text = None
-    while True:
-        now = time.time()
-        if now - last_gc_time >= gc_interval:
-            gc.collect()
-            last_gc_time = now
-            if psutil is not None:
-                mem = process.memory_info().rss / (1024 * 1024)
-                print(f"\n[GC] メモリ使用量: {mem:.2f} MB")
-        if now - last_context_reinit_time >= context_reinit_interval:
-            cv2.destroyAllWindows()
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-            if fullscreen:
-                cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-            last_context_reinit_time = now
-            print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
         try:
-            while True:
-                new_frame = frame_queue.get_nowait()
-                prev_frame = curr_frame.copy()
-                curr_frame = new_frame
-                last_frame_update = time.time()
-        except queue.Empty:
-            pass
-        t = (time.time() - last_frame_update) / stylegan_interval
-        if t > 1:
-            t = 1.0
-        if text_visible and now - last_text_change >= display_time:
-            text_visible = False
-            last_text_change = now
-        elif not text_visible and now - last_text_change >= clear_time:
-            current_text_idx = (current_text_idx + 1) % len(pre_generated_texts)
-            text_visible = True
-            last_text_change = now
-        if text_visible:
-            new_text = pre_generated_texts[current_text_idx]
-        else:
-            new_text = {"en": [], "ja": []}
-        if new_text != current_text:
-            current_text = new_text
-            current_overlay = create_text_overlay(curr_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
-        if current_overlay is not None:
-            frame_with_text = blend_overlay(curr_frame.copy(), current_overlay)
-        else:
-            frame_with_text = curr_frame.copy()
-        # letterbox_frame により、全体解像度に調整
-        letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
-        cv2.imshow(window_name, letterboxed_frame)
-        fps_count += 1
-        elapsed = time.time() - t0
-        if elapsed >= 1.0:
-            print(f"\r{fps_count / elapsed:.2f} fps", end="")
-            t0 = time.time()
-            fps_count = 0
-        key = cv2.waitKey(display_interval_ms) & 0xFF
-        if key == ord('q'):
-            print("\n終了します。")
-            stop_event.set()
-            break
-    cv2.destroyAllWindows()
+            if "-" in size:
+                w, h = size.split("-")
+            elif "x" in size:
+                w, h = size.split("x")
+            elif "X" in size:
+                w, h = size.split("X")
+            elif "," in size:
+                w, h = size.split(",")
+            else:
+                raise ValueError("Invalid size format")
+            size_parsed = [int(h), int(w)]
+        except Exception as e:
+            print("サイズのパースに失敗しました。例: 720x1280 の形式で指定してください。")
+            raise e
+
+        try:
+            if "-" in affine_scale:
+                a, b = affine_scale.split("-")
+                affine_parsed = [float(a), float(b)]
+            else:
+                affine_parsed = [1.0, 1.0]
+        except Exception as e:
+            print("affine_scale のパースに失敗しました。例: 1.0-1.0 の形式で指定してください。")
+            raise e
+
+        config_args = {
+            "out_dir": out_dir,
+            "model": model,
+            "labels": labels,
+            "size": size_parsed,
+            "scale_type": scale_type,
+            "latmask": latmask,
+            "nXY": nxy,
+            "splitfine": splitfine,
+            "splitmax": splitmax,
+            "trunc": trunc,
+            "save_lat": save_lat,
+            "verbose": verbose,
+            "noise_seed": noise_seed,
+            "frames": frames,
+            "cubic": cubic,
+            "gauss": gauss,
+            "anim_trans": anim_trans,
+            "anim_rot": anim_rot,
+            "shiftbase": shiftbase,
+            "shiftmax": shiftmax,
+            "digress": digress,
+            "affine_scale": affine_parsed,
+            "framerate": framerate,
+            "prores": prores,
+            "variations": variations,
+            "method": method,
+            "chunk_size": chunk_size,
+            "stylegan_gpu": sg_gpu,
+            "font_scale": font_scale,
+            "font_thickness": font_thickness
+        }
+        log_base = "log"
+        os.makedirs(log_base, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = os.path.join(log_base, timestamp)
+        os.makedirs(log_dir, exist_ok=True)
+        gpt_device = torch.device(gpt_gpu if torch.cuda.is_available() else "cpu")
+        print("事前にテキストを生成中...")
+        pre_generated_texts = pre_generate_text_lines(
+            gpt_model, gpt_prompt, max_new_tokens, context_length,
+            gpt_device, text_lines, log_dir,
+            frame_width=size_parsed[1],
+            font_scale=font_scale,
+            font_path=STYLEGAN_CONFIG['font_path']
+        )
+        print("テキストの事前生成完了。")
+        frame_queue = queue.Queue(maxsize=30)
+        stop_event = threading.Event()
+        gan_thread = threading.Thread(target=stylegan_frame_generator,
+                                      args=(frame_queue, stop_event, config_args),
+                                      daemon=True)
+        gan_thread.start()
+        print("リアルタイムプレビュー開始（'q' キーで終了）")
+        screen_width = actual_screen_width
+        screen_height = actual_screen_height
+        window_name = "Display"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        if fullscreen:
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        last_context_reinit_time = time.time()
+        context_reinit_interval = 300
+        last_gc_time = time.time()
+        gc_interval = 60
+        fps_count = 0
+        t0 = time.time()
+        curr_frame = frame_queue.get()  # blocking
+        prev_frame = curr_frame.copy()
+        last_frame_update = time.time()
+        display_interval_ms = 33
+        stylegan_interval = 0.1
+        current_text_idx = 0
+        text_visible = True
+        last_text_change = time.time()
+        current_overlay = None
+        current_text = None
+
+        while True:
+            now = time.time()
+            if now - last_gc_time >= gc_interval:
+                gc.collect()
+                last_gc_time = now
+                if psutil is not None:
+                    mem = process.memory_info().rss / (1024 * 1024)
+                    print(f"\n[GC] メモリ使用量: {mem:.2f} MB")
+            if now - last_context_reinit_time >= context_reinit_interval:
+                cv2.destroyAllWindows()
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                if fullscreen:
+                    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                last_context_reinit_time = now
+                print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
+            try:
+                while True:
+                    new_frame = frame_queue.get_nowait()
+                    prev_frame = curr_frame.copy()
+                    curr_frame = new_frame
+                    last_frame_update = time.time()
+            except queue.Empty:
+                pass
+            t = (time.time() - last_frame_update) / stylegan_interval
+            if t > 1:
+                t = 1.0
+            if text_visible and now - last_text_change >= display_time:
+                text_visible = False
+                last_text_change = now
+            elif not text_visible and now - last_text_change >= clear_time:
+                current_text_idx = (current_text_idx + 1) % len(pre_generated_texts)
+                text_visible = True
+                last_text_change = now
+            if text_visible:
+                new_text = pre_generated_texts[current_text_idx]
+            else:
+                new_text = {"en": [], "ja": []}
+            if new_text != current_text:
+                current_text = new_text
+                current_overlay = create_text_overlay(curr_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
+            if current_overlay is not None:
+                frame_with_text = blend_overlay(curr_frame.copy(), current_overlay)
+            else:
+                frame_with_text = curr_frame.copy()
+            letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
+            cv2.imshow(window_name, letterboxed_frame)
+            fps_count += 1
+            elapsed = time.time() - t0
+            if elapsed >= 1.0:
+                print(f"\r{fps_count / elapsed:.2f} fps", end="")
+                t0 = time.time()
+                fps_count = 0
+            key = cv2.waitKey(display_interval_ms) & 0xFF
+            if key == ord('q'):
+                print("\n終了します。")
+                stop_event.set()
+                break
+        cv2.destroyAllWindows()
+    finally:
+        # プロファイリング終了時、統計情報を表示
+        if profiler is not None:
+            profiler.disable()
+            s = io.StringIO()
+            ps = pstats.Stats(profiler, stream=s).sort_stats("cumtime")
+            ps.print_stats()
+            print("\n=== プロファイリング結果 ===")
+            print(s.getvalue())
 
 if __name__ == '__main__':
     cli()
