@@ -6,8 +6,6 @@
 映像上に日本語（上部、半透明）と英語（下部、半透明）のテキストをオーバーレイ表示します。
 また、--debug オプションを指定すると、cProfile によるボトルネックのプロファイリングを実施し、
 終了時に累積時間が一定以上（ここでは 0.1 秒以上）の関数のみを表示します。
-
-さらに、--batch-size オプションで複数の latent を同時処理することで fps を向上させることを試みています。
 """
 
 import os
@@ -191,7 +189,7 @@ def blend_overlay(frame, overlay):
     return blended_bgr
 
 # -------------------------------
-# StyleGAN3 フレーム生成スレッド（バッチ処理版）
+# StyleGAN3 フレーム生成スレッド
 # -------------------------------
 def stylegan_frame_generator(frame_queue, stop_event, config_args):
     device = torch.device(config_args["stylegan_gpu"])
@@ -300,13 +298,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         else:
             _ = Gs(torch.randn([1, z_dim], device=device), label,
                    truncation_psi=config_args["trunc"], noise_mode='const')
-
-    # --- バッチ処理用パラメータ ---
-    batch_size = config_args.get("batch_size", 1)
-    # もし label が1サンプル用なら、バッチ分にレプリケート
-    if label is not None and label.shape[0] == 1 and batch_size > 1:
-        label = label.repeat(batch_size, 1)
-
     frame_idx_local = 0
     frame_idx = 0
     if config_args["method"] == "random_walk":
@@ -321,56 +312,28 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
                                             chunk_size=config_args["chunk_size"],
                                             uniform=False)
     while not stop_event.is_set():
-        # バッチサイズ分の latent を取得
-        latent_batch = []
-        for i in range(batch_size):
-            latent_batch.append(next(latent_gen))  # 各は shape [1, z_dim]
-        z_batch = torch.cat(latent_batch, dim=0)  # shape [batch_size, z_dim]
-        # パラメータのバッチ化
-        if lmask is not None:
-            latmask_val = lmask[frame_idx_local % len(lmask)]
-            if latmask_val is not None:
-                # latmask_val の shape に合わせてバッチ次元を追加・レプリケート
-                latmask_batch = latmask_val.unsqueeze(0).repeat(batch_size, *([1]*latmask_val.ndim))
-            else:
-                latmask_batch = None
-        else:
-            latmask_batch = None
-        if dconst is not None:
-            dconst_val = dconst[frame_idx % dconst.shape[0]]
-            dconst_batch = dconst_val.unsqueeze(0).repeat(batch_size, *([1]*dconst_val.ndim))
-        else:
-            dconst_batch = None
-        if trans_params is not None:
-            trans_param_val = trans_params[frame_idx % len(trans_params)]
-            # 各要素をバッチ化（例：shifts, angles, scales の各 tensor に unsqueeze & repeat）
-            trans_param_batch = (trans_param_val[0].unsqueeze(0).repeat(batch_size,1,1),
-                                 trans_param_val[1].unsqueeze(0).repeat(batch_size,1,1),
-                                 trans_param_val[2].unsqueeze(0).repeat(batch_size,1,1))
-        else:
-            trans_param_batch = None
-
+        z_current = next(latent_gen)
         with torch.no_grad():
             if custom and hasattr(Gs.synthesis, 'input'):
-                out_batch = Gs(z_batch, label, latmask_batch, trans_param_batch, dconst_batch,
-                               truncation_psi=config_args["trunc"], noise_mode='const')
+                latmask = lmask[frame_idx_local % len(lmask)] if lmask is not None else None
+                dconst_current = dconst[frame_idx % dconst.shape[0]] if dconst is not None else None
+                trans_param = trans_params[frame_idx % len(trans_params)] if trans_params is not None else None
+                out = Gs(z_current, label, latmask, trans_param, dconst_current,
+                         truncation_psi=config_args["trunc"], noise_mode='const')
             else:
-                out_batch = Gs(z_batch, label, None, truncation_psi=config_args["trunc"], noise_mode='const')
-        # 変換処理（バッチ処理）
-        out_batch = (out_batch.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
-        # 各フレームをキューに投入
-        for i in range(batch_size):
-            frame = out_batch[i].cpu().numpy()[..., ::-1]
+                out = Gs(z_current, label, None, truncation_psi=config_args["trunc"], noise_mode='const')
+        out = (out.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0,255).to(torch.uint8)
+        out_np = out[0].cpu().numpy()[..., ::-1]
+        try:
+            frame_queue.put(out_np, block=False)
+        except queue.Full:
             try:
-                frame_queue.put(frame, block=False)
-            except queue.Full:
-                try:
-                    frame_queue.get_nowait()
-                except queue.Empty:
-                    pass
-                frame_queue.put(frame, block=False)
-        frame_idx_local += batch_size
-        frame_idx += batch_size
+                frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+            frame_queue.put(out_np, block=False)
+        frame_idx_local += 1
+        frame_idx += 1
 
 # -------------------------------
 # create_text_overlay: テキストオーバーレイ画像生成（透過度付き）
@@ -474,14 +437,13 @@ def letterbox_frame(frame, target_width, target_height):
 @click.option('--font-scale', type=float, default=STYLEGAN_CONFIG['default_font_scale'], help="default font scale for overlay text")
 @click.option('--font-thickness', type=int, default=STYLEGAN_CONFIG['default_font_thickness'], help="default font thickness for overlay text")
 @click.option('--text-lines', type=int, default=10, help="Number of text lines to pre-generate")
-@click.option('--batch-size', type=int, default=1, help="Batch size for processing multiple latents simultaneously")
 @click.option('--debug', is_flag=True, default=False, help="Enable profiling of bottlenecks")
 @click.option('--fullscreen/--windowed', default=True, help="Use fullscreen mode if enabled; otherwise use window mode")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method, chunk_size,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time,
-        sg_gpu, font_scale, font_thickness, text_lines, batch_size, debug, fullscreen):
+        sg_gpu, font_scale, font_thickness, text_lines, debug, fullscreen):
     # プロファイリング開始（--debug オプションが有効な場合）
     profiler = None
     if debug:
@@ -545,8 +507,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             "chunk_size": chunk_size,
             "stylegan_gpu": sg_gpu,
             "font_scale": font_scale,
-            "font_thickness": font_thickness,
-            "batch_size": batch_size
+            "font_thickness": font_thickness
         }
         log_base = "log"
         os.makedirs(log_base, exist_ok=True)
@@ -648,10 +609,11 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             else:
                 frame_with_text = curr_frame
 
-            # letterbox_frame により、全体解像度に調整
+            # その後、letterbox_frame 等の処理はそのまま
             letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
             cv2.imshow(window_name, letterboxed_frame)
 
+            # fps計測やキー入力処理はそのまま
             fps_count += 1
             elapsed = time.time() - t0
             if elapsed >= 1.0:
