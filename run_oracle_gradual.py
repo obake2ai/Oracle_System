@@ -329,8 +329,11 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         # パラメータのバッチ化
         if lmask is not None:
             latmask_val = lmask[frame_idx_local % len(lmask)]
-            # latmask_val の shape に合わせてバッチ次元を追加・レプリケート
-            latmask_batch = latmask_val.unsqueeze(0).repeat(batch_size, *([1]*latmask_val.ndim))
+            if latmask_val is not None:
+                # latmask_val の shape に合わせてバッチ次元を追加・レプリケート
+                latmask_batch = latmask_val.unsqueeze(0).repeat(batch_size, *([1]*latmask_val.ndim))
+            else:
+                latmask_batch = None
         else:
             latmask_batch = None
         if dconst is not None:
