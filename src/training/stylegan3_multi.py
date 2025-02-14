@@ -124,40 +124,48 @@ class SynthesisInput(torch.nn.Module):
         self.bandwidth = bandwidth
 
         # Draw random frequencies from uniform 2D disc.
-        freqs = torch.randn([self.channels, 2])
+        freqs = torch.randn([self.channels, 2])  # [channels, 2]
         radii = freqs.square().sum(dim=1, keepdim=True).sqrt()
-        freqs /= radii * (radii.square().exp().pow(0.25))
+        freqs /= radii * radii.square().exp().pow(0.25)
         freqs *= bandwidth
-        phases = torch.rand([self.channels]) - 0.5
+        phases = torch.rand([self.channels]) - 0.5  # [channels]
 
         self.weight = torch.nn.Parameter(torch.randn([self.channels, self.channels]))
         self.affine = FullyConnectedLayer(w_dim, 4, weight_init=0, bias_init=[1,0,0,0])
         self.register_buffer('transform', torch.eye(3, 3))
-        self.register_buffer('freqs', freqs)  # [channels, 2]
-        self.register_buffer('phases', phases)  # [channels]
+        self.register_buffer('freqs', freqs)
+        self.register_buffer('phases', phases)
 
     def forward(self, w, trans_param=None):
         """
         w: [B, w_dim]
-        trans_param: either None or a tuple (shifts, angles, scales)
-            shifts: [B, 2], angles: [B], scales: [B,2]
+        trans_param: either None or a tuple (shifts, angles, scales) OR a list of such tuples for each sample.
+            - shifts: [B, 2]
+            - angles: [B]        (in degrees)
+            - scales: [B, 2]
         """
         B = w.shape[0]
         if trans_param is None:
             transforms = self.transform.unsqueeze(0).expand(B, -1, -1)
         else:
-            shifts, angles, scales = trans_param  # assume each is a tensor of shape [B, ...]
-            transforms = make_transform_batch(shifts, angles, scales, invert=True)  # [B,3,3]
-
+            # if trans_param is provided as a list (or tuple) of tuples, stack them along batch dimension.
+            if isinstance(trans_param, (list, tuple)) and isinstance(trans_param[0], (list, tuple)):
+                shifts = torch.stack([torch.as_tensor(tp[0], device=w.device) for tp in trans_param], dim=0)
+                angles = torch.stack([torch.as_tensor(tp[1], device=w.device) for tp in trans_param], dim=0)
+                scales = torch.stack([torch.as_tensor(tp[2], device=w.device) for tp in trans_param], dim=0)
+                trans_param = (shifts, angles, scales)
+            # Now assume trans_param is a tuple of tensors of shape [B, ...]
+            shifts, angles, scales = trans_param
+            transforms = make_transform_batch(shifts, angles, scales, invert=True)
         # Expand freqs and phases to batch dimension.
         freqs = self.freqs.unsqueeze(0).expand(B, -1, -1)      # [B, channels, 2]
         phases = self.phases.unsqueeze(0).expand(B, -1)          # [B, channels]
 
         # Batched affine transformation.
         t = self.affine(w)   # [B, 4]
-        t = t / t[:, :2].norm(dim=1, keepdim=True)  # normalize first two elements
+        t = t / t[:, :2].norm(dim=1, keepdim=True)  # Normalize rotation components.
 
-        # Compute rotation and translation matrices in batch.
+        # Compute batched rotation and translation matrices.
         m_r = torch.eye(3, device=w.device).unsqueeze(0).expand(B, -1, -1)
         m_r[:, 0, 0] = t[:, 0]
         m_r[:, 0, 1] = -t[:, 1]
@@ -166,31 +174,28 @@ class SynthesisInput(torch.nn.Module):
         m_t = torch.eye(3, device=w.device).unsqueeze(0).expand(B, -1, -1)
         m_t[:, 0, 2] = -t[:, 2]
         m_t[:, 1, 2] = -t[:, 3]
-        transform_ = m_r.bmm(m_t).bmm(transforms)  # [B,3,3]
+        transform_ = m_r.bmm(m_t).bmm(transforms)  # [B, 3, 3]
 
         # Transform frequencies.
-        # Compute: phases_ = phases + (freqs @ transform_[:, :2, 2])
         phases_ = phases + torch.bmm(freqs, transform_[:, :2, 2].unsqueeze(2)).squeeze(2)  # [B, channels]
         freqs_ = torch.bmm(freqs, transform_[:, :2, :2])  # [B, channels, 2]
 
-        amplitudes = (1 - (freqs_.norm(dim=2) - self.bandwidth) / (self.sampling_rate / 2 - self.bandwidth)).clamp(0, 1)  # [B, channels]
+        amplitudes = (1 - (freqs_.norm(dim=2) - self.bandwidth) / (self.sampling_rate / 2 - self.bandwidth)).clamp(0, 1)
 
-        # Construct sampling grid (assumed same for all in batch)
+        # Construct sampling grid (same for each sample in the batch).
         theta = torch.eye(2, 3, device=w.device).unsqueeze(0).expand(B, -1, -1)
         theta[:, 0, 0] = 0.5 * self.size[0] / self.sampling_rate
         theta[:, 1, 1] = 0.5 * self.size[1] / self.sampling_rate
-        grids = torch.nn.functional.affine_grid(theta, [B, 1, int(self.size[1]), int(self.size[0])], align_corners=False)  # [B, H, W, 2]
+        grids = torch.nn.functional.affine_grid(theta, [B, 1, int(self.size[1]), int(self.size[0])], align_corners=False)
 
         # Compute Fourier features in batch.
-        # First, compute: x = grids.unsqueeze(3) @ freqs_.permute(0,2,1).unsqueeze(1)
-        x = torch.matmul(grids.unsqueeze(3), freqs_.permute(0, 2, 1).unsqueeze(1))  # [B, H, W, 1, channels]
+        x = torch.matmul(grids.unsqueeze(3), freqs_.permute(0, 2, 1).unsqueeze(1))
         x = x.squeeze(3)  # [B, H, W, channels]
         x = x + phases_.unsqueeze(1).unsqueeze(2)
         x = torch.sin(x * (np.pi * 2))
-        x = x * amplitudes.unsqueeze(1).unsqueeze(2)  # [B, H, W, channels]
-
+        x = x * amplitudes.unsqueeze(1).unsqueeze(2)
         weight = self.weight / np.sqrt(self.channels)
-        x = torch.matmul(x, weight.t())  # [B, H, W, channels]
+        x = torch.matmul(x, weight.t())
         x = x.permute(0, 3, 1, 2)  # [B, channels, H, W]
         return x
 
