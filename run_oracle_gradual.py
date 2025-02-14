@@ -476,7 +476,7 @@ def letterbox_frame(frame, target_width, target_height):
 @click.option('--clear-time', type=float, default=STYLEGAN_CONFIG['clear_time'], help="clear time for text (seconds)")
 @click.option('--font-scale', type=float, default=STYLEGAN_CONFIG['default_font_scale'], help="default font scale for overlay text")
 @click.option('--font-thickness', type=int, default=STYLEGAN_CONFIG['default_font_thickness'], help="default font thickness for overlay text")
-@click.option('--text-lines', type=int, default=10, help="Number of text lines to pre-generate")
+@click.option('--text-lines', type=int, default=3, help="Number of text lines to pre-generate")
 @click.option('--debug', is_flag=True, default=False, help="Enable profiling of bottlenecks")
 @click.option('--fullscreen/--windowed', default=True, help="Use fullscreen mode if enabled; otherwise use window mode")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
