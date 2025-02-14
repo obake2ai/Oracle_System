@@ -31,10 +31,14 @@ def make_transform_batch(shifts: torch.Tensor, angles: torch.Tensor, scales: tor
     """
     shifts: [B, 2]
     angles: [B]        (in degrees)
-    scales: [B, 2]
+    scales: [B, 2] or [B, 1] (if only one value is provided, isotropic scaling is assumed)
     Returns:
       transforms: [B, 3, 3]
     """
+    # 拡張: scales の次元が1の場合は、同じ値を2回複製
+    if scales.dim() == 2 and scales.size(1) == 1:
+        scales = scales.repeat(1, 2)
+
     B = shifts.shape[0]
     device = shifts.device
     m = torch.eye(3, device=device).unsqueeze(0).expand(B, -1, -1)  # [B,3,3]
@@ -42,14 +46,15 @@ def make_transform_batch(shifts: torch.Tensor, angles: torch.Tensor, scales: tor
     pi = np.pi
     s = torch.sin(angles / 360.0 * pi * 2)  # [B]
     c = torch.cos(angles / 360.0 * pi * 2)  # [B]
-    sx = scales[:, 1]  # note: original code uses (sy, sx)
+    # 注意: 元のコードでは (sy, sx) の順序となっているため
     sy = scales[:, 0]
+    sx = scales[:, 1]
     m[:, 0, 0] = sx * c
     m[:, 0, 1] = sx * s
-    m[:, 0, 2] = shifts[:, 1]   # x-component from shifts[*,1]
+    m[:, 0, 2] = shifts[:, 1]  # x 軸成分
     m[:, 1, 0] = -sy * s
     m[:, 1, 1] = sy * c
-    m[:, 1, 2] = shifts[:, 0]   # y-component from shifts[*,0]
+    m[:, 1, 2] = shifts[:, 0]  # y 軸成分
     if invert:
         m = torch.inverse(m)
     return m
