@@ -4,12 +4,8 @@
 """
 このコードは、StyleGAN3 によるリアルタイム映像生成と GPT によるテキスト生成＋翻訳を組み合わせ、
 映像上に日本語（上部、半透明）と英語（下部、半透明）のテキストをオーバーレイ表示します。
-また、transition 機能では、StyleGAN3 の低fps出力から別スレッドで事前補間し、ピクセルごとに粒子状の dissolve 効果を与えた
-中間フレームを生成して、スムーズなアニメーション（約30fps相当）に変換します。
-さらに、--fullscreen/--windowed オプションで表示モードを切り替えられ、出力ウィンドウ数も選択可能です。
-
-今回の変更では、スクリーンが2台ある場合、生成したフレームを左右に分割し、
-左側をスクリーン1、右側をスクリーン2に全画面表示するようにしています。
+なお、今回の変更では、複数ディスプレイ対応機能および transition 補間処理を削除し、
+単一ディスプレイでの表示のみを行います。
 """
 
 import os
@@ -195,7 +191,7 @@ def blend_overlay(frame, overlay):
     return blended_bgr
 
 # -------------------------------
-# StyleGAN3 フレーム生成スレッド（従来処理）
+# StyleGAN3 フレーム生成スレッド
 # -------------------------------
 def stylegan_frame_generator(frame_queue, stop_event, config_args):
     device = torch.device(config_args["stylegan_gpu"])
@@ -342,36 +338,6 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         frame_idx += 1
 
 # -------------------------------
-# transition_frame_generator: 補間フレームを生成する別スレッド用関数
-# -------------------------------
-NUM_TRANSITION_FRAMES = 3  # 例として、StyleGAN 出力の間を 3 分割（約30fps相当にする）
-
-def transition_frame_generator(base_queue, transition_queue, stop_event, num_transition_frames=NUM_TRANSITION_FRAMES):
-    # 最初のベースフレームを取得（ブロッキング）
-    prev_frame = base_queue.get(block=True)
-    while not stop_event.is_set():
-        try:
-            curr_frame = base_queue.get(timeout=0.1)
-        except queue.Empty:
-            continue
-        H, W, _ = prev_frame.shape
-        R = np.random.rand(H, W, 1)  # 画面サイズに合わせたランダムマトリックス
-        # 補間フレーム群を生成
-        for i in range(1, num_transition_frames):
-            t = i / num_transition_frames  # 0 < t < 1
-            mask = (R < t).astype(np.float32)
-            inter_frame = (prev_frame.astype(np.float32) * (1 - mask) + curr_frame.astype(np.float32) * mask).astype(np.uint8)
-            try:
-                transition_queue.put(inter_frame, block=False)
-            except queue.Full:
-                pass
-        try:
-            transition_queue.put(curr_frame, block=False)
-        except queue.Full:
-            pass
-        prev_frame = curr_frame
-
-# -------------------------------
 # create_text_overlay: テキストオーバーレイ画像生成（透過度付き）
 # -------------------------------
 def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
@@ -473,14 +439,12 @@ def letterbox_frame(frame, target_width, target_height):
 @click.option('--font-scale', type=float, default=STYLEGAN_CONFIG['default_font_scale'], help="default font scale for overlay text")
 @click.option('--font-thickness', type=int, default=STYLEGAN_CONFIG['default_font_thickness'], help="default font thickness for overlay text")
 @click.option('--text-lines', type=int, default=10, help="Number of text lines to pre-generate")
-@click.option('--num-displays', type=int, default=1, help="Number of output display windows (1 or 2)")
-@click.option('--transition/--no-transition', default=True, help="Enable transition interpolation for smoother frame rate (simulate 30fps)")
 @click.option('--fullscreen/--windowed', default=True, help="Use fullscreen mode if enabled; otherwise use window mode")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss, anim_trans, anim_rot, shiftbase,
         shiftmax, digress, affine_scale, framerate, prores, variations, method, chunk_size,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu, display_time, clear_time,
-        sg_gpu, font_scale, font_thickness, text_lines, num_displays, transition, fullscreen):
+        sg_gpu, font_scale, font_thickness, text_lines, fullscreen):
     try:
         if "-" in size:
             w, h = size.split("-")
@@ -558,30 +522,14 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                                   args=(frame_queue, stop_event, config_args),
                                   daemon=True)
     gan_thread.start()
-    # transition 処理用キューと別スレッド
-    if transition:
-        transition_queue = queue.Queue(maxsize=10)
-        trans_thread = threading.Thread(target=transition_frame_generator,
-                                        args=(frame_queue, transition_queue, stop_event),
-                                        daemon=True)
-        trans_thread.start()
     print("リアルタイムプレビュー開始（'q' キーで終了）")
     # xrandr で取得した総解像度を利用
     screen_width = actual_screen_width
     screen_height = actual_screen_height
-    window_names = []
-    for i in range(num_displays):
-        win_name = f"Display {i+1}"
-        cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-        if fullscreen:
-            cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-        window_names.append(win_name)
-    # 2画面の場合はそれぞれのウィンドウをスクリーン上に配置
-    if num_displays == 2:
-        # 1画面分の幅（例: 3840）が想定
-        half_width = screen_width // 2
-        cv2.moveWindow(window_names[0], 0, 0)
-        cv2.moveWindow(window_names[1], half_width, 0)
+    window_name = "Display"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    if fullscreen:
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     last_context_reinit_time = time.time()
     context_reinit_interval = 300
     last_gc_time = time.time()
@@ -608,31 +556,22 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 print(f"\n[GC] メモリ使用量: {mem:.2f} MB")
         if now - last_context_reinit_time >= context_reinit_interval:
             cv2.destroyAllWindows()
-            for win in window_names:
-                cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-                if fullscreen:
-                    cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            if fullscreen:
+                cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             last_context_reinit_time = now
             print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
         try:
-            if transition:
-                while True:
-                    new_frame = transition_queue.get_nowait()
-                    curr_frame = new_frame
-                    last_frame_update = time.time()
-            else:
-                while True:
-                    new_frame = frame_queue.get_nowait()
-                    prev_frame = curr_frame.copy()
-                    curr_frame = new_frame
-                    last_frame_update = time.time()
+            while True:
+                new_frame = frame_queue.get_nowait()
+                prev_frame = curr_frame.copy()
+                curr_frame = new_frame
+                last_frame_update = time.time()
         except queue.Empty:
             pass
         t = (time.time() - last_frame_update) / stylegan_interval
         if t > 1:
             t = 1.0
-        # transition が有効の場合は既に補間済みのフレームを使用
-        disp_frame = curr_frame
         if text_visible and now - last_text_change >= display_time:
             text_visible = False
             last_text_change = now
@@ -646,26 +585,14 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             new_text = {"en": [], "ja": []}
         if new_text != current_text:
             current_text = new_text
-            current_overlay = create_text_overlay(disp_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
+            current_overlay = create_text_overlay(curr_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
         if current_overlay is not None:
-            frame_with_text = blend_overlay(disp_frame.copy(), current_overlay)
+            frame_with_text = blend_overlay(curr_frame.copy(), current_overlay)
         else:
-            frame_with_text = disp_frame.copy()
-        # letterbox_frame により、全体解像度（例: 7680x2160）に調整
+            frame_with_text = curr_frame.copy()
+        # letterbox_frame により、全体解像度に調整
         letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
-
-        # ★ ここが今回の変更点 ★
-        # 2画面の場合、letterboxed_frame を左右に分割して各ウィンドウに表示
-        if num_displays == 2:
-            half_width = screen_width // 2
-            left_frame = letterboxed_frame[:, :half_width, :]
-            right_frame = letterboxed_frame[:, half_width:, :]
-            cv2.imshow(window_names[0], left_frame)
-            cv2.imshow(window_names[1], right_frame)
-        else:
-            for win in window_names:
-                cv2.imshow(win, letterboxed_frame)
-
+        cv2.imshow(window_name, letterboxed_frame)
         fps_count += 1
         elapsed = time.time() - t0
         if elapsed >= 1.0:
