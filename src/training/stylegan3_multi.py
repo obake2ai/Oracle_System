@@ -27,24 +27,33 @@ from util.utilgan import fix_size, multimask
 
 # Construct an inverse rotation/translation matrix for generator.
 # generator expects inverse matrix to avoid potentially failing numerical operations in the network.
-def make_transform(translate: Tuple[float,float], angle: float, scale: Tuple[float, float], invert=False):
-    # print(translate)
+def make_transform(translate: Tuple[float, float], angle: float, scale, invert=False):
+    # scale がシーケンスであるかチェックし、1要素の場合は同じ値を使う
+    if hasattr(scale, '__len__'):
+        if len(scale) == 1:
+            sy = sx = scale[0]
+        elif len(scale) >= 2:
+            sy, sx = scale[:2]
+        else:
+            raise ValueError("Scale must have at least one element")
+    else:
+        sx = sy = scale
+
     m = torch.eye(3)
     pi = torch.tensor(np.pi)
-    s = torch.sin(angle/360.0*pi*2)
-    c = torch.cos(angle/360.0*pi*2)
+    s = torch.sin(angle / 360.0 * pi * 2)
+    c = torch.cos(angle / 360.0 * pi * 2)
 
-    sy, sx = scale
-
-    m[0][0] = sx * c
-    m[0][1] = sx * s
-    m[0][2] = translate[1] # 0 in numpy
-    m[1][0] = -sy * s
-    m[1][1] =  sy * c
-    m[1][2] = translate[0] # 1 in numpy
-    if invert is True:
+    m[0, 0] = sx * c
+    m[0, 1] = sx * s
+    m[0, 2] = translate[1]
+    m[1, 0] = -sy * s
+    m[1, 1] = sy * c
+    m[1, 2] = translate[0]
+    if invert:
         m = torch.inverse(m)
     return m
+
 
 #----------------------------------------------------------------------------
 
