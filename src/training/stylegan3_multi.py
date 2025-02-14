@@ -331,7 +331,7 @@ class SynthesisLayer(torch.nn.Module):
             f'in_cutoff={self.in_cutoff:g}, out_cutoff={self.out_cutoff:g},',
             f'in_half_width={self.in_half_width:g}, out_half_width={self.out_half_width:g},',
             f'in_size={list(self.in_size)}, out_size={list(self.out_size)},',
-            f'in_channels={self.in_channels:d}, out_channels={self.out_channels:d}"])
+            f'in_channels={self.in_channels:d}, out_channels={self.out_channels:d}'])
 
 #---------------------------------------------------------------------------
 
