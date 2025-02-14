@@ -27,28 +27,38 @@ from util.utilgan import fix_size, multimask
 
 #---------------------------------------------------------------------------
 # Batched version of make_transform
-def make_transform_batch(shifts: torch.Tensor, angles: torch.Tensor, scales: torch.Tensor, invert=False):
+def make_transform_batch(shifts, angles, scales, invert=False):
     """
-    shifts: [B, 2]
-    angles: [B]        (in degrees)
-    scales: [B, 2] or [B, 1] or [B]
-        (if only one value is provided per sample, isotropic scaling is assumed)
+    shifts: tensor-like of shape [B, 2]
+    angles: tensor-like of shape [B] (in degrees)
+    scales: tensor-like of shape [B, 2] or [B, 1] or [B]
+            (if only one value is provided per sample, isotropic scaling is assumed)
     Returns:
       transforms: [B, 3, 3]
     """
-    # scales が 1 次元の場合は [B] -> [B,1] に変換
+    # 入力を torch.Tensor に変換（dtype は float32 に統一）
+    shifts = torch.as_tensor(shifts, dtype=torch.float32)
+    angles = torch.as_tensor(angles, dtype=torch.float32)
+    scales = torch.as_tensor(scales, dtype=torch.float32)
+
+    # shifts が 1 次元の場合、[B] から [B, 2] にリシェイプ
+    if shifts.dim() == 1:
+        shifts = shifts.view(-1, 2)
+    # scales が 1 次元の場合、[B] -> [B,1]
     if scales.dim() == 1:
         scales = scales.view(-1, 1)
-    # scales が 3 次元以上の場合は、最初の次元以外をフラット化して [B, N] にする
+    # scales が 3 次元以上の場合は、[B, ...] -> [B, N]
     elif scales.dim() > 2:
         scales = scales.view(scales.size(0), -1)
-    # 第2次元が 1 の場合、同じ値を複製して [B,2] にする
+    # scales の第2次元が 1 なら同じ値を複製して [B,2] にする
     if scales.size(1) == 1:
         scales = scales.repeat(1, 2)
 
     B = shifts.shape[0]
     device = shifts.device
-    m = torch.eye(3, device=device).unsqueeze(0).expand(B, -1, -1)  # [B,3,3]
+    # [B, 3, 3] の単位行列を作成
+    m = torch.eye(3, device=device).unsqueeze(0).expand(B, 3, 3)
+
     pi = np.pi
     s = torch.sin(angles / 360.0 * pi * 2)  # [B]
     c = torch.cos(angles / 360.0 * pi * 2)  # [B]
@@ -63,6 +73,7 @@ def make_transform_batch(shifts: torch.Tensor, angles: torch.Tensor, scales: tor
     if invert:
         m = torch.inverse(m)
     return m
+
 
 #---------------------------------------------------------------------------
 
