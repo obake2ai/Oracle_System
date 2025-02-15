@@ -515,15 +515,32 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         log_dir = os.path.join(log_base, timestamp)
         os.makedirs(log_dir, exist_ok=True)
         gpt_device = torch.device(gpt_gpu if torch.cuda.is_available() else "cpu")
+
+        # -------------------------
+        # 事前テキスト生成（最大60秒待機）
+        # -------------------------
         print("事前にテキストを生成中...")
-        pre_generated_texts = pre_generate_text_lines(
-            gpt_model, gpt_prompt, max_new_tokens, context_length,
-            gpt_device, text_lines, log_dir,
-            frame_width=size_parsed[1],
-            font_scale=font_scale,
-            font_path=STYLEGAN_CONFIG['font_path']
-        )
+        pre_generated_texts = []
+        text_thread_result = {}
+        def generate_text():
+            result = pre_generate_text_lines(
+                gpt_model, gpt_prompt, max_new_tokens, context_length,
+                gpt_device, text_lines, log_dir,
+                frame_width=size_parsed[1],
+                font_scale=font_scale,
+                font_path=STYLEGAN_CONFIG['font_path']
+            )
+            text_thread_result['result'] = result
+        text_thread = threading.Thread(target=generate_text, daemon=True)
+        text_thread.start()
+        text_thread.join(timeout=60)
+        if text_thread.is_alive():
+            print("テキスト生成タイムアウト。60秒以内に更新がなかったため、テキストなしで開始します。")
+            pre_generated_texts = [{"en": [], "ja": []}]
+        else:
+            pre_generated_texts = text_thread_result.get('result', [{"en": [], "ja": []}])
         print("テキストの事前生成完了。")
+
         frame_queue = queue.Queue(maxsize=30)
         stop_event = threading.Event()
         gan_thread = threading.Thread(target=stylegan_frame_generator,
