@@ -14,12 +14,12 @@ import _genSGAN3  # ファイル配置に合わせてパスを調整してくだ
 @click.option("-n", "--nXY", default="1-1", help="フレーム分割数（幅×高さ、例: 1-1）")
 @click.option("--splitfine", default=0.0, type=float, help="分割時のエッジシャープネス（0で滑らか、値が大きいと細かく）")
 @click.option("--splitmax", default=None, type=int, help="分割時のlatent最大数（OOM防止用）")
-@click.option("--trunc", default=0.8, type=float, help="truncation psi (0..1、低いほど安定・高いほど多様)")
+@click.option("--trunc", default=0.9, type=float, help="truncation psi (0..1、低いほど安定・高いほど多様)")
 @click.option("--save_lat", is_flag=True, help="latentベクトルをファイルに保存")
 @click.option("-v", "--verbose", is_flag=True, help="詳細情報の表示")
 @click.option("--noise_seed", default=3025, type=int, help="乱数シード")
 # アニメーション関連
-@click.option("-f", "--frames", default="200-25", help="生成フレーム数と補間ステップ（例: 200-25）")
+@click.option("-f", "--frames", default="1-1", help="生成フレーム数と補間ステップ（例: 200-25）")
 @click.option("--cubic", is_flag=True, help="平滑化に3次スプラインを使用")
 @click.option("--gauss", is_flag=True, help="平滑化にGaussianフィルタを使用")
 # SG3変形
