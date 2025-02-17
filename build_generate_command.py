@@ -4,18 +4,23 @@ import time
 import random
 from config.config import GEN_CONFIG
 
-def compute_size_from_outdir(out_dir):
+def compute_size_from_outdir(out_dir, base_size = 128):
     """
     out_dir のベースネームから、サイズ文字列を動的に計算します。
-    ・ベースネームが "12x6" を含む場合 → "3072-1536" (12×256, 6×256)
-    ・ベースネームが "4x3" を含む場合 → "1024-1536" (4×256, 6×256)
+    base_size を用いて計算するため、後で比率を変更しやすいです。
+    ・ベースネームに "12x6" が含まれている場合 → f"{12*base_size}-{6*base_size}" (例: "3072-1536")
+    ・ベースネームに "4x3" が含まれている場合 → f"{4*base_size}-{6*base_size}" (例: "1024-1536")
     それ以外の場合は、GEN_CONFIG に設定されている 'size' をそのまま返します。
     """
     base = os.path.basename(out_dir)
     if "12x6" in base:
-        return "3072-1536"
+        width = 12 * base_size
+        height = 6 * base_size
+        return f"{width}-{height}"
     elif "4x3" in base:
-        return "1024-1536"
+        width = 4 * base_size
+        height = 6 * base_size
+        return f"{width}-{height}"
     else:
         return GEN_CONFIG.get("size", "1024-1024")
 
@@ -93,7 +98,7 @@ def main():
         os.system(" ".join(cmd))
 
         # 次の生成まで少し待機（必要に応じて調整）
-        time.sleep(1)
+        time.sleep(30)
 
 if __name__ == "__main__":
     main()
