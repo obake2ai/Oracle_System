@@ -57,7 +57,6 @@ def main(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, spli
     _genSGAN3.a.save_lat     = save_lat
     _genSGAN3.a.verbose      = verbose
     _genSGAN3.a.noise_seed   = noise_seed
-    _genSGAN3.a.frames       = frames
     _genSGAN3.a.cubic        = cubic
     _genSGAN3.a.gauss        = gauss
     _genSGAN3.a.anim_trans   = anim_trans
@@ -70,6 +69,7 @@ def main(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, spli
     _genSGAN3.a.prores       = prores
     _genSGAN3.a.variations   = variations
     _genSGAN3.a.image        = image
+    _genSGAN3.a.frames, _genSGAN3.a.fstep = [int(s) for s in frames.split('-')] if frames is not None else None
 
     os.makedirs(out_dir, exist_ok=True)
 
