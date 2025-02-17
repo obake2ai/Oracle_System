@@ -1,14 +1,21 @@
 # SSH経由で転送する先の設定
 
 SSH_CONFIG = {
-    # 転送先ホストのIPまたはホスト名
-    'host': 'zero2wh16.local',
-    # SSHポート（通常は22）
+    # 共通設定
     'port': 22,
-    # ログインユーザ名
     'username': 'pi',
-    # パスワード（鍵認証の場合はパスワード不要。または key_filename を使う）
     'password': 'raspberry',
-    # 転送先のリモートフォルダパス
-    'remote_dir': '/home/pi/sshtest',
+    # 各転送先の設定（ここに最大20件程度追加可能）
+    'destinations': [
+        {
+            'host': 'zero2wh16.local',
+            'local_dir': '6x12',           # 例：画像生成スクリプトの出力フォルダ
+            'remote_dir': '/home/pi/sshtest'
+        },
+        {
+            'host': 'zero2wh15.local',
+            'local_dir': '3x4',           # 例：画像生成スクリプトの出力フォルダ
+            'remote_dir': '/home/pi/sshtest'
+        },
+    ]
 }
