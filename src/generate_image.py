@@ -1,6 +1,6 @@
 import os
 import click
-from src import _genSGAN3  # ファイル配置に合わせてパスを調整してください
+import _genSGAN3  # ファイル配置に合わせてパスを調整してください
 from config.config import STYLEGAN_CONFIG
 
 @click.command()
