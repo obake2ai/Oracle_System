@@ -71,6 +71,7 @@ from config.api import OPENAI_API_KEY
 openai.api_key = OPENAI_API_KEY
 
 from config.config import STYLEGAN_CONFIG
+from config.prompts import CHATGPT_PROMPTS
 from util.utilgan import latent_anima
 from src.realtime_generate import infinite_latent_smooth, infinite_latent_random_walk, img_resize_for_cv2
 from util.llm import GPT
@@ -114,7 +115,7 @@ def wrap_text(text, font, max_width):
     return lines
 
 def translate_to_japanese(text):
-    prompt = f"次の英語のテキストを、なるべく元の文体を保ったまま、神秘的な神話テキストとして日本語に翻訳してください:\n\n{text}"
+    prompt = f"f{CHATGPT_PROMPTS[translate"]}\n\n{text}"
     try:
         response = openai.chat.completions.create(
             model="gpt-4o",  # 必要に応じて変更
