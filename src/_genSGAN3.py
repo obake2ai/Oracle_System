@@ -306,18 +306,53 @@ def generate(noise_seed):
     # -------------------------------------------------------------------------
     # 画像出力モード (--image 指定時)
     # -------------------------------------------------------------------------
-    if a.image:
-        # out_dir 下に out_name のフォルダを作成して、その中にフレームを保存
+if a.image:
+    # フレーム数が 1 の場合は単一画像として保存
+    if latents.shape[0] == 1:
+        filename = osp.join(a.out_dir, f"{out_name}.png")
+        print(f"Saving single frame to: {filename}")
+
+        latent = latents[0]  # [n_mult, z_dim]
+        lbl = labels[0] if label_size else None
+        lat_m = lmask[0] if len(lmask) == 1 else lmask[0]
+        trp = trans_params[0] if trans_params[0] is not None else None
+        dct = dconst[0] if len(dconst.shape) > 1 else None
+
+        if custom:
+            if hasattr(Gs.synthesis, 'input'):  # SG3
+                output = Gs(
+                    latent, lbl, lat_m, trp, dct,
+                    truncation_psi=a.trunc, noise_mode='const'
+                )
+            else:  # SG2
+                output = Gs(
+                    latent, lbl, lat_m,
+                    truncation_psi=a.trunc, noise_mode='const'
+                )
+        else:
+            output = Gs(
+                latent, lbl,
+                truncation_psi=a.trunc, noise_mode='const'
+            )
+
+        # 出力テンソルを画像に変換
+        output = (output.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255)
+        output = output.to(torch.uint8).cpu().numpy()
+        img = output[0]
+        imsave(filename, img, quality=95)
+        print("Frame saved.")
+    else:
+        # フレーム数が複数の場合は従来通り out_dir/out_name/ 内に保存
         image_out_dir = osp.join(a.out_dir, out_name)
         os.makedirs(image_out_dir, exist_ok=True)
         print(f"Saving frames to: {image_out_dir}")
 
-        bar = progbar(frame_count)
-        for i in range(frame_count):
+        bar = progbar(latents.shape[0])
+        for i in range(latents.shape[0]):
             latent = latents[i]  # [n_mult, z_dim]
             lbl = labels[i] if label_size else None
             lat_m = lmask[i % len(lmask)] if len(lmask) > 1 else lmask[0]
-            trp = trans_params[i] if trans_params[i] else None
+            trp = trans_params[i] if trans_params[i] is not None else None
             dct = dconst[i] if len(dconst.shape) > 1 else None
 
             if custom:
@@ -337,16 +372,12 @@ def generate(noise_seed):
                     truncation_psi=a.trunc, noise_mode='const'
                 )
 
-            # output: [n_mult, C, H, W], 今回は n_mult=1 で出力すると仮定
             output = (output.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255)
             output = output.to(torch.uint8).cpu().numpy()
-
-            # とりあえず先頭のみを保存
-            # (n_mult>1のときは何枚か並んだ画像が合成されるので出力枚数に注意)
             img = output[0]
 
-            filename = osp.join(image_out_dir, f"{i:06d}.png")
-            imsave(filename, img, quality=95)
+            frame_filename = osp.join(image_out_dir, f"{i:06d}.png")
+            imsave(frame_filename, img, quality=95)
             bar.upd()
         print("All frames saved.")
     else:
