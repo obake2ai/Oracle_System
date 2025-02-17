@@ -7,7 +7,7 @@ def build_generate_image_command():
     config/config.py の GEN_CONFIG をもとに、
     generate_image.py を呼び出すためのコマンドライン引数リストを構築します。
     """
-    cmd = ["python", "generate_image.py"]
+    cmd = ["python", "src/generate_image.py"]
 
     # 基本設定
     cmd.extend(["-o", GEN_CONFIG["out_dir"]])
