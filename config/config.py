@@ -52,7 +52,7 @@ STYLEGAN_CONFIG = {
 #1F
 GEN_CONFIG = {
     # 生成画像の出力先フォルダ
-    'out_dir': '_out',
+    'out_dir': 'outputs/6x12',
     # 使用するモデルのパス（_genSGAN3.py内で読み込まれるpklファイル）
     'model': 'models/embryo-stylegan3-r-network-snapshot-000096',
     # ラベル指定（例："1-7-4" など、条件付け用）

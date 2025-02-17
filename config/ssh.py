@@ -9,12 +9,12 @@ SSH_CONFIG = {
     'destinations': [
         {
             'host': 'zero2wh16.local',
-            'local_dir': '6x12',           # 例：画像生成スクリプトの出力フォルダ
+            'local_dir': 'outputs/6x12',           # 例：画像生成スクリプトの出力フォルダ
             'remote_dir': '/home/pi/sshtest'
         },
         {
             'host': 'zero2wh15.local',
-            'local_dir': '3x4',           # 例：画像生成スクリプトの出力フォルダ
+            'local_dir': 'outputs/3x4',           # 例：画像生成スクリプトの出力フォルダ
             'remote_dir': '/home/pi/sshtest'
         },
     ]
