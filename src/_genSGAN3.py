@@ -309,7 +309,7 @@ def generate(noise_seed):
 if a.image:
     # フレーム数が 1 の場合は単一画像として保存
     if latents.shape[0] == 1:
-        filename = osp.join(a.out_dir, f"{out_name}.png")
+        filename = osp.join(a.out_dir, f"{out_name}.pngd")
         print(f"Saving single frame to: {filename}")
 
         latent = latents[0]  # [n_mult, z_dim]
