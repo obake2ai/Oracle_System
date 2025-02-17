@@ -16,11 +16,11 @@ def compute_size_from_outdir(out_dir, base_size = 128):
     if "12x6" in base:
         width = 12 * base_size
         height = 6 * base_size
-        return f"{width}-{height}"
+        return f"{height}-{width}"
     elif "4x3" in base:
         width = 4 * base_size
         height = 6 * base_size
-        return f"{width}-{height}"
+        return f"{height}-{width}"
     else:
         return GEN_CONFIG.get("size", "1024-1024")
 

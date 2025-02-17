@@ -14,7 +14,7 @@ SSH_CONFIG = {
         },
         {
             'host': 'zero2wh15.local',
-            'local_dir': 'outputs/4x3',           # 例：画像生成スクリプトの出力フォルダ
+            'local_dir': 'outputs/4x3-A',           # 例：画像生成スクリプトの出力フォルダ
             'remote_dir': '/home/pi/sshtest'
         },
     ]
