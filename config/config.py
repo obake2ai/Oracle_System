@@ -1,3 +1,4 @@
+#B1F
 STYLEGAN_CONFIG = {
     "out_dir": "_out",
     "model": "models/embryo-stylegan3-r-network-snapshot-000096",
@@ -46,4 +47,48 @@ STYLEGAN_CONFIG = {
     # ---- スライドショーの設定 ----
     "display_time": 10,
     "clear_time": 0.5
+}
+
+#1F
+GEN_CONFIG = {
+    # 生成画像の出力先フォルダ
+    'out_dir': '_out',
+    # 使用するモデルのパス（_genSGAN3.py内で読み込まれるpklファイル）
+    'model': 'models/embryo-stylegan3-r-network-snapshot-000096',
+    # ラベル指定（例："1-7-4" など、条件付け用）
+    'labels': None,
+    # 画像サイズ（例："1024-1024" ※内部で [1024,1024] に変換）
+    'size': '1024-1024',
+    'scale_type': 'pad',
+    'latmask': None,
+    'nXY': '1-1',
+    'splitfine': 0.0,
+    'splitmax': None,
+    # truncation psi 値
+    'trunc': 0.9,
+    'save_lat': False,
+    'verbose': False,
+    # 初期乱数シード
+    'noise_seed': 3025,
+    # フレーム数と補間ステップ（ここでは画像出力モードなので "1-1" ＝1フレーム）
+    'frames': '1-1',
+    'cubic': False,
+    'gauss': False,
+    # SG3変形関連
+    'anim_trans': False,
+    'anim_rot': False,
+    'shiftbase': 0.0,
+    'shiftmax': 0.0,
+    'digress': 0.0,
+    # アフィン変換（縦横のスケールファクタ）
+    'affine_scale': '1.0-1.0',
+    # 動画設定（画像出力モードの場合はあまり影響しない）
+    'framerate': 30,
+    'prores': False,
+    # 生成するバリエーション数（シードを順次更新）
+    'variations': 1,
+    # 画像出力モードにする（動画ではなく各フレームを個別画像として保存）
+    'image': True,
+    # 画像生成の実行間隔（秒）
+    'interval': 300,
 }
