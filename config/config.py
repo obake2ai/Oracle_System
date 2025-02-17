@@ -69,7 +69,7 @@ GEN_CONFIG = {
     'save_lat': False,
     'verbose': False,
     # 初期乱数シード
-    'noise_seed': 3026,
+    'noise_seed': 3029,
     # フレーム数と補間ステップ（ここでは画像出力モードなので "1-1" ＝1フレーム）
     'frames': '1-1',
     'cubic': False,
