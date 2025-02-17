@@ -306,54 +306,17 @@ def generate(noise_seed):
     # -------------------------------------------------------------------------
     # 画像出力モード (--image 指定時)
     # -------------------------------------------------------------------------
-if a.image:
+    if a.image:
     # フレーム数が 1 の場合は単一画像として保存
-    if latents.shape[0] == 1:
-        filename = osp.join(a.out_dir, f"{out_name}.pngd")
-        print(f"Saving single frame to: {filename}")
+        if latents.shape[0] == 1:
+            filename = osp.join(a.out_dir, f"{out_name}.pngd")
+            print(f"Saving single frame to: {filename}")
 
-        latent = latents[0]  # [n_mult, z_dim]
-        lbl = labels[0] if label_size else None
-        lat_m = lmask[0] if len(lmask) == 1 else lmask[0]
-        trp = trans_params[0] if trans_params[0] is not None else None
-        dct = dconst[0] if len(dconst.shape) > 1 else None
-
-        if custom:
-            if hasattr(Gs.synthesis, 'input'):  # SG3
-                output = Gs(
-                    latent, lbl, lat_m, trp, dct,
-                    truncation_psi=a.trunc, noise_mode='const'
-                )
-            else:  # SG2
-                output = Gs(
-                    latent, lbl, lat_m,
-                    truncation_psi=a.trunc, noise_mode='const'
-                )
-        else:
-            output = Gs(
-                latent, lbl,
-                truncation_psi=a.trunc, noise_mode='const'
-            )
-
-        # 出力テンソルを画像に変換
-        output = (output.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255)
-        output = output.to(torch.uint8).cpu().numpy()
-        img = output[0]
-        imsave(filename, img, quality=95)
-        print("Frame saved.")
-    else:
-        # フレーム数が複数の場合は従来通り out_dir/out_name/ 内に保存
-        image_out_dir = osp.join(a.out_dir, out_name)
-        os.makedirs(image_out_dir, exist_ok=True)
-        print(f"Saving frames to: {image_out_dir}")
-
-        bar = progbar(latents.shape[0])
-        for i in range(latents.shape[0]):
-            latent = latents[i]  # [n_mult, z_dim]
-            lbl = labels[i] if label_size else None
-            lat_m = lmask[i % len(lmask)] if len(lmask) > 1 else lmask[0]
-            trp = trans_params[i] if trans_params[i] is not None else None
-            dct = dconst[i] if len(dconst.shape) > 1 else None
+            latent = latents[0]  # [n_mult, z_dim]
+            lbl = labels[0] if label_size else None
+            lat_m = lmask[0] if len(lmask) == 1 else lmask[0]
+            trp = trans_params[0] if trans_params[0] is not None else None
+            dct = dconst[0] if len(dconst.shape) > 1 else None
 
             if custom:
                 if hasattr(Gs.synthesis, 'input'):  # SG3
@@ -372,14 +335,51 @@ if a.image:
                     truncation_psi=a.trunc, noise_mode='const'
                 )
 
+            # 出力テンソルを画像に変換
             output = (output.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255)
             output = output.to(torch.uint8).cpu().numpy()
             img = output[0]
+            imsave(filename, img, quality=95)
+            print("Frame saved.")
+        else:
+            # フレーム数が複数の場合は従来通り out_dir/out_name/ 内に保存
+            image_out_dir = osp.join(a.out_dir, out_name)
+            os.makedirs(image_out_dir, exist_ok=True)
+            print(f"Saving frames to: {image_out_dir}")
 
-            frame_filename = osp.join(image_out_dir, f"{i:06d}.png")
-            imsave(frame_filename, img, quality=95)
-            bar.upd()
-        print("All frames saved.")
+            bar = progbar(latents.shape[0])
+            for i in range(latents.shape[0]):
+                latent = latents[i]  # [n_mult, z_dim]
+                lbl = labels[i] if label_size else None
+                lat_m = lmask[i % len(lmask)] if len(lmask) > 1 else lmask[0]
+                trp = trans_params[i] if trans_params[i] is not None else None
+                dct = dconst[i] if len(dconst.shape) > 1 else None
+
+                if custom:
+                    if hasattr(Gs.synthesis, 'input'):  # SG3
+                        output = Gs(
+                            latent, lbl, lat_m, trp, dct,
+                            truncation_psi=a.trunc, noise_mode='const'
+                        )
+                    else:  # SG2
+                        output = Gs(
+                            latent, lbl, lat_m,
+                            truncation_psi=a.trunc, noise_mode='const'
+                        )
+                else:
+                    output = Gs(
+                        latent, lbl,
+                        truncation_psi=a.trunc, noise_mode='const'
+                    )
+
+                output = (output.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255)
+                output = output.to(torch.uint8).cpu().numpy()
+                img = output[0]
+
+                frame_filename = osp.join(image_out_dir, f"{i:06d}.png")
+                imsave(frame_filename, img, quality=95)
+                bar.upd()
+            print("All frames saved.")
     else:
         # ---------------------------------------------------------------------
         # 動画出力モード (デフォルト)
