@@ -6,10 +6,10 @@ from config.config import STYLEGAN_CONFIG
 @click.command()
 # 基本設定
 @click.option("-o", "--out_dir", default="_out", help="出力先ディレクトリ")
-@click.option("-m", "--model", default=STYLEGAN_CONFIG['model'], help="pklチェックポイントのパス")
+@click.option("-m", "--model", default="models/ffhq1024.pkl", help="pklチェックポイントのパス")
 @click.option("-l", "--labels", default=None, help="条件付け用のラベル/カテゴリ（例: 1-7-4）")
 # カスタムオプション
-@click.option("-s", "--size", default=None, help="出力解像度（例: 1024-1024）")
+@click.option("-s", "--size", default="1024-1024", help="出力解像度（例: 1024-1024）")
 @click.option("-sc", "--scale_type", default="pad", help="pad, side, symm (centr, fit も可)")
 @click.option("-lm", "--latmask", default=None, help="複数latentのブレンド用外部マスクファイル（またはディレクトリ）")
 @click.option("-n", "--nXY", default="1-1", help="フレーム分割数（幅×高さ、例: 1-1）")
