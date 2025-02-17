@@ -70,6 +70,7 @@ def main(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, spli
     _genSGAN3.a.variations   = variations
     _genSGAN3.a.image        = image
     _genSGAN3.a.frames, _genSGAN3.a.fstep = [int(s) for s in frames.split('-')] if frames is not None else None
+    _genSGAN3.a.image        = True
 
     os.makedirs(out_dir, exist_ok=True)
 
