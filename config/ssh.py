@@ -10,5 +10,5 @@ SSH_CONFIG = {
     # パスワード（鍵認証の場合はパスワード不要。または key_filename を使う）
     'password': 'raspberry',
     # 転送先のリモートフォルダパス
-    'remote_dir': '/path/to/remote/directory',
+    'remote_dir': '/home/pi/sshtest',
 }
