@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
 import os
+import time
+import random
 from config.config import GEN_CONFIG
+
+def compute_size_from_outdir(out_dir):
+    """
+    out_dir のベースネームから、サイズ文字列を動的に計算します。
+    ・ベースネームが "12x6" を含む場合 → "3072-1536" (12×256, 6×256)
+    ・ベースネームが "4x3" を含む場合 → "1024-1536" (4×256, 6×256)
+    それ以外の場合は、GEN_CONFIG に設定されている 'size' をそのまま返します。
+    """
+    base = os.path.basename(out_dir)
+    if "12x6" in base:
+        return "3072-1536"
+    elif "4x3" in base:
+        return "1024-1536"
+    else:
+        return GEN_CONFIG.get("size", "1024-1024")
 
 def build_generate_image_command():
     """
-    config/config.py の GEN_CONFIG をもとに、
-    generate_image.py を呼び出すためのコマンドライン引数リストを構築します。
+    GEN_CONFIG の値をもとに、src/generate_image.py を呼び出すためのコマンドライン引数リストを構築します。
     """
     cmd = ["python", "src/generate_image.py"]
 
@@ -60,10 +76,24 @@ def build_generate_image_command():
 
     return cmd
 
-if __name__ == "__main__":
-    cmd = build_generate_image_command()
-    # コマンドライン引数リストを表示
-    print("Generated command-line argument list:")
-    print(" ".join(cmd))
+def main():
+    # 複数の保存先ディレクトリ（各保存先で別々の画像生成を行う）
+    out_dirs = ['outputs/12x6', 'outputs/4x3-A', 'outputs/4x3-B', 'outputs/4x3-C']
 
-    os.system(" ".join(cmd))
+    for out_dir in out_dirs:
+        # 動的に GEN_CONFIG を更新
+        GEN_CONFIG["out_dir"] = out_dir
+        GEN_CONFIG["size"] = compute_size_from_outdir(out_dir)
+        # ノイズシードは毎回ランダムに（例：1000〜10000）
+        GEN_CONFIG["noise_seed"] = random.randint(1000, 10000)
+
+        cmd = build_generate_image_command()
+        print(f"\n--- Generating images for '{out_dir}' ---")
+        print("Command:", " ".join(cmd))
+        os.system(" ".join(cmd))
+
+        # 次の生成まで少し待機（必要に応じて調整）
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
