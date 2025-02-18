@@ -105,14 +105,21 @@ def transfer_transition_sequence(ssh, remote_dir, target_size, local_dir, prev_i
         preview_filename = f"{prev_filename}_{new_filename}_frame{idx+1:03d}.png"
         remote_preview_path = os.path.join(remote_dir, preview_filename)
         print(f"Sending transition frame {idx+1}/{len(frames)} as {preview_filename} to {remote_preview_path} ...")
-        send_image_via_sftp(ssh, frame, remote_preview_path)
+        try:
+            send_image_via_sftp(ssh, frame, remote_preview_path)
+        except Exception as e:
+            print(f"Error sending frame {idx+1}: {e}.")
+        # 常にローカル log には保存しておく
         save_preview_to_log(local_dir, frame, preview_filename)
         time.sleep(transition_interval)
 
     final_filename = f"{prev_filename}_{new_filename}_final.png"
     remote_final_path = os.path.join(remote_dir, final_filename)
     print(f"Sending final image as {final_filename} to {remote_final_path} ...")
-    send_image_via_sftp(ssh, new_img, remote_final_path)
+    try:
+        send_image_via_sftp(ssh, new_img, remote_final_path)
+    except Exception as e:
+        print(f"Error sending final image: {e}.")
     save_preview_to_log(local_dir, new_img, final_filename)
     print(f"Holding final preview for {keep_time} seconds ...")
     time.sleep(keep_time)
@@ -171,7 +178,10 @@ def process_destination(dest, port, username, password):
             if prev_img is None:
                 remote_preview_path = os.path.join(remote_dir, f"{new_filename}_initial.png")
                 print("No previous image; sending new image directly.")
-                send_image_via_sftp(ssh, new_img, remote_preview_path)
+                try:
+                    send_image_via_sftp(ssh, new_img, remote_preview_path)
+                except Exception as e:
+                    print(f"Error sending initial image: {e}.")
                 save_preview_to_log(local_dir, new_img, f"{new_filename}_initial.png")
                 prev_img = new_img
                 prev_filename = new_filename
@@ -183,7 +193,7 @@ def process_destination(dest, port, username, password):
                 transfer_transition_sequence(ssh, remote_dir, target_size, local_dir, prev_img, new_img, prev_filename, new_filename)
                 prev_img = new_img
                 prev_filename = new_filename
-            # 元のファイルは log フォルダに日時付きで保存（圧縮済みではなく元ファイルそのもの）
+            # 移動前の元ファイルは日時付きで log フォルダに保存
             save_file_to_log(filepath)
         except Exception as e:
             print(f"Error processing {filepath}: {e}. Skipping this file.")
