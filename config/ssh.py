@@ -8,9 +8,9 @@ SSH_CONFIG = {
     # 各転送先の設定（ここに最大20件程度追加可能）
     'destinations': [
         {
-            'host': 'zero2wh16.local',
+            'host': 'zero2wh04.local',
             'local_dir': 'outputs/12x6',           # 例：画像生成スクリプトの出力フォルダ
-            'remote_dir': '/home/pi/sshtest'
+            'remote_dir': '/home/pi/Oracle_LEDmatrix/samples'
         },
         {
             'host': 'zero2wh15.local',
