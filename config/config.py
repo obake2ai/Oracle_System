@@ -3,7 +3,7 @@ STYLEGAN_CONFIG = {
     "out_dir": "_out",
     "model": "models/embryo-stylegan3-r-network-snapshot-000096",
     "labels": None,
-    "size": "2496-920",            # 出力解像度 (後で [height, width] に変換) "1920-708"
+    "size": "2058-920",            # 出力解像度 (後で [height, width] に変換) "1920-708"
     "scale_type": "pad",
     "latmask": None,
     "nXY": "1-1",                # latent blending 用：フレームの分割数（例："1-1"）
@@ -15,7 +15,7 @@ STYLEGAN_CONFIG = {
     "noise_seed": 3025,
     "sg_gpu": "cuda:0",
     # アニメーション関連
-    "frames": "240-120",          # （未使用だが互換性のため）
+    "frames": "240-180",          # （未使用だが互換性のため）
     "cubic": False,
     "gauss": False,
     # SG3 の変換（アニメーション）パラメータ
@@ -23,7 +23,7 @@ STYLEGAN_CONFIG = {
     "anim_rot": True,
     "shiftbase": 0.5,
     "shiftmax": 0.2,
-    "digress": -10,
+    "digress": -12,
     # Affine Conversion（拡大縮小）
     "affine_scale": "0.8-0.8",
     # 動画保存などの設定
