@@ -9,12 +9,17 @@ SSH_CONFIG = {
     'destinations': [
         {
             'host': '192.168.10.33', #zero2wh04.local
-            'local_dir': 'outputs/12x6',           # 例：画像生成スクリプトの出力フォルダ
+            'local_dir': 'outputs/12x6',
             'remote_dir': '/home/pi/Oracle_LEDmatrix/samples'
         },
         {
-            'host': 'zero2wh15.local',
-            'local_dir': 'outputs/4x3-A',           # 例：画像生成スクリプトの出力フォルダ
+            'host': '192.168.10.29', #zero2wh05.local
+            'local_dir': 'outputs/12x6',
+            'remote_dir': '/home/pi/sshtest'
+        },
+        {
+            'host': '192.168.10.26', #zero2wh06.local
+            'local_dir': 'outputs/12x6',         
             'remote_dir': '/home/pi/sshtest'
         },
     ]
