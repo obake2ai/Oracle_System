@@ -36,7 +36,7 @@ STYLEGAN_CONFIG = {
     # ---- 以下、GPT 関連の設定 ----
     "gpt_model": "./models/gpt_model_epoch_16000.pth",
     "gpt_prompt": "I'm praying: ",
-    "max_new_tokens": 40,
+    "max_new_tokens": 30,
     "context_length": 512,
     "gpt_gpu": "cuda:0",
     # ---- 以下、オーバーレイテキスト用フォント設定 ----

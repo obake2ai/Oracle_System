@@ -172,6 +172,14 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
                 en_text = tokenizer.decode(generated)
             else:
                 en_text = str(generated)
+
+            # プロンプト部分を除去する
+            if en_text.startswith(prompt):
+                en_text = en_text[len(prompt):].strip()
+
+            # 改行を削除（改行文字をスペースに置換）
+            en_text = en_text.replace("\n", " ").strip()
+
             ja_text = translate_to_japanese(en_text)
             en_lines = wrap_text(en_text, font_en, max_text_width)
             ja_lines = wrap_text(ja_text, font_ja, max_text_width)
