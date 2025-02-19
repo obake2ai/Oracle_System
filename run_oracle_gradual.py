@@ -115,7 +115,8 @@ def wrap_text(text, font, max_width):
     return lines
 
 def translate_to_japanese(text):
-    prompt = f"f{CHATGPT_PROMPTS[translate"]}\n\n{text}"
+    # ※キー "translate" を利用してプロンプトを取得（必要に応じて修正してください）
+    prompt = f"{CHATGPT_PROMPTS['translate']}\n\n{text}"
     try:
         response = openai.chat.completions.create(
             model="gpt-4o",  # 必要に応じて変更
@@ -131,7 +132,7 @@ def translate_to_japanese(text):
         print("翻訳エラー:", e)
         return "翻訳エラー"
 
-def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, device, num_lines, log_dir, frame_width, font_scale, font_path):
+def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, device, num_lines, log_dir, frame_width, font_scale, font_path_en, font_path_ja):
     tokenizer = tiktoken.get_encoding('gpt2')
     checkpoint = torch.load(model_path, map_location=device)
     state_dict = {key.replace("_orig_mod.", ""): value for key, value in checkpoint['model_state_dict'].items()}
@@ -148,10 +149,15 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
     model.eval()
     font_size = int(32 * font_scale)
     try:
-        font = ImageFont.truetype(font_path, font_size)
+        font_en = ImageFont.truetype(font_path_en, font_size)
     except Exception as e:
-        print("フォント読み込みエラー:", e)
-        font = ImageFont.load_default()
+        print("英語フォント読み込みエラー:", e)
+        font_en = ImageFont.load_default()
+    try:
+        font_ja = ImageFont.truetype(font_path_ja, font_size)
+    except Exception as e:
+        print("日本語フォント読み込みエラー:", e)
+        font_ja = ImageFont.load_default()
     max_text_width = int(frame_width * 0.9)
     generated_lines = []
     log_file_path = os.path.join(log_dir, "generated_texts.txt")
@@ -167,8 +173,8 @@ def pre_generate_text_lines(model_path, prompt, max_new_tokens, context_length, 
             else:
                 en_text = str(generated)
             ja_text = translate_to_japanese(en_text)
-            en_lines = wrap_text(en_text, font, max_text_width)
-            ja_lines = wrap_text(ja_text, font, max_text_width)
+            en_lines = wrap_text(en_text, font_en, max_text_width)
+            ja_lines = wrap_text(ja_text, font_ja, max_text_width)
             line_data = {"en": en_lines, "ja": ja_lines}
             generated_lines.append(line_data)
             log_file.write(f"Line {i+1}:\n")
@@ -339,20 +345,24 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 # -------------------------------
 # create_text_overlay: テキストオーバーレイ画像生成（透過度付き）
 # -------------------------------
-def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
+def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path_en, font_path_ja):
     h, w = frame_shape[:2]
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
     try:
-        font = ImageFont.truetype(font_path, int(32 * font_scale))
+        font_en = ImageFont.truetype(font_path_en, int(32 * font_scale))
     except Exception as e:
-        print("フォント読み込みエラー:", e)
-        font = ImageFont.load_default()
+        print("英語フォント読み込みエラー:", e)
+        font_en = ImageFont.load_default()
+    try:
+        font_ja = ImageFont.truetype(font_path_ja, int(32 * font_scale))
+    except Exception as e:
+        print("日本語フォント読み込みエラー:", e)
+        font_ja = ImageFont.load_default()
     ja_lines = texts.get("ja", [])
     en_lines = texts.get("en", [])
-    default_line_height = get_text_size(font, "A")[1]
-    ja_block_height = sum(get_text_size(font, line)[1] for line in ja_lines) if ja_lines else 0
-    en_block_height = sum(get_text_size(font, line)[1] for line in en_lines) if en_lines else 0
+    default_line_height = get_text_size(font_ja, "A")[1]
+    ja_block_height = sum(get_text_size(font_ja, line)[1] for line in ja_lines) if ja_lines else 0
+    en_block_height = sum(get_text_size(font_en, line)[1] for line in en_lines) if en_lines else 0
     combined_height = ja_block_height + (default_line_height if ja_lines and en_lines else 0) + en_block_height
     start_y = (h - combined_height) // 2
     y = start_y
@@ -360,17 +370,19 @@ def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path):
     text_fill = (255, 255, 255, 230)
     stroke_fill = (0, 0, 0, 230)
     for line in ja_lines:
-        line_w, line_h = get_text_size(font, line)
+        line_w, line_h = get_text_size(font_ja, line)
         x = (w - line_w) // 2
-        draw.text((x, y), line, font=font, fill=text_fill,
+        draw = ImageDraw.Draw(overlay)
+        draw.text((x, y), line, font=font_ja, fill=text_fill,
                   stroke_width=thickness, stroke_fill=stroke_fill)
         y += line_h
     if ja_lines and en_lines:
         y += default_line_height
     for line in en_lines:
-        line_w, line_h = get_text_size(font, line)
+        line_w, line_h = get_text_size(font_en, line)
         x = (w - line_w) // 2
-        draw.text((x, y), line, font=font, fill=text_fill,
+        draw = ImageDraw.Draw(overlay)
+        draw.text((x, y), line, font=font_en, fill=text_fill,
                   stroke_width=thickness, stroke_fill=stroke_fill)
         y += line_h
     return np.array(overlay)
@@ -529,7 +541,8 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 gpt_device, text_lines, log_dir,
                 frame_width=size_parsed[1],
                 font_scale=font_scale,
-                font_path=STYLEGAN_CONFIG['font_path']
+                font_path_en=STYLEGAN_CONFIG['font_path_en'],
+                font_path_ja=STYLEGAN_CONFIG['font_path_ja']
             )
             text_thread_result['result'] = result
         text_thread = threading.Thread(target=generate_text, daemon=True)
@@ -555,8 +568,9 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         if fullscreen:
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        # リフレッシュ間隔を10分（600秒）に設定
+        context_reinit_interval = 600
         last_context_reinit_time = time.time()
-        context_reinit_interval = 300
         last_gc_time = time.time()
         gc_interval = 60
         fps_count = 0
@@ -580,13 +594,11 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 if psutil is not None:
                     mem = process.memory_info().rss / (1024 * 1024)
                     print(f"\n[GC] メモリ使用量: {mem:.2f} MB")
+            # ウィンドウの再生成は行わず、プロパティの更新のみでリフレッシュする
             if now - last_context_reinit_time >= context_reinit_interval:
-                cv2.destroyAllWindows()
-                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                if fullscreen:
-                    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                print("\n[Context Reinit] OpenCV ウィンドウのプロパティを更新しました。")
+                cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
                 last_context_reinit_time = now
-                print("\n[Context Reinit] OpenCV ウィンドウコンテキストを再初期化しました。")
             try:
                 while True:
                     new_frame = frame_queue.get_nowait()
@@ -619,7 +631,8 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             # 既存のキャッシュ（current_overlay）が存在し、かつフレームサイズが変わっていなければ再生成しない
             if new_text != current_text or current_overlay is None or current_overlay.shape[:2] != curr_frame.shape[:2]:
                 current_text = new_text
-                current_overlay = create_text_overlay(curr_frame.shape, current_text, font_scale, font_thickness, STYLEGAN_CONFIG['font_path'])
+                current_overlay = create_text_overlay(curr_frame.shape, current_text, font_scale, font_thickness,
+                                                      STYLEGAN_CONFIG['font_path_en'], STYLEGAN_CONFIG['font_path_ja'])
 
             # blend_overlay 内で変換・コピーを実施しているため、ここではそのまま curr_frame を渡す
             if current_overlay is not None:
@@ -644,7 +657,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 stop_event.set()
                 break
 
-        cv2.destroyAllWindows()
+        cv2.destroyAllWindows()  # ループ終了時のみウィンドウを破棄
     finally:
         # プロファイリング終了時、累積時間が閾値以上の関数のみを表示する
         if profiler is not None:

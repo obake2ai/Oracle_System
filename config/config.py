@@ -40,7 +40,8 @@ STYLEGAN_CONFIG = {
     "context_length": 512,
     "gpt_gpu": "cuda:0",
     # ---- 以下、オーバーレイテキスト用フォント設定 ----
-    "font_path": "data/fonts/NotoSansCJK-Regular.ttc",
+    "font_path_ja": "data/fonts/FOT-TsukuGoPr5-D.otf",
+    "font_path_en": "data/fonts/Acumin-RPro.otf",
     "default_font_scale": 0.5,
     "default_font_thickness": 2,
     "font_color": (255, 255, 255),
