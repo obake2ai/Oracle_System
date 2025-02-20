@@ -19,7 +19,6 @@ def get_target_size(local_dir):
     形式に合致しなければ None を返す。
     """
     base = os.path.basename(os.path.normpath(local_dir))
-    # ハイフンがあれば、最初の部分のみを採用
     base = base.split('-')[0]
     if "x" in base:
         parts = base.split("x")
@@ -89,8 +88,7 @@ def save_preview_to_log(local_dir, image, preview_filename):
 def transfer_transition_sequence(ssh, remote_dir, target_size, local_dir, prev_img, new_img, prev_filename, new_filename):
     """
     prev_img から new_img へのトランジションを生成し、指定の間隔内に順次送信します。
-    送信時のファイル名には、prev_filename と new_filename、およびフレーム番号を含め、
-    そのファイルも log フォルダに保存します。
+    各フレームはファイル名に frame 番号を含み、ローカルの log フォルダにも保存されます。
     最後に new_img を送信し、keep 秒間保持します。
     """
     total_interval = GEN_CONFIG.get("interval", 300)              # 総トランジション時間（秒）
@@ -109,7 +107,6 @@ def transfer_transition_sequence(ssh, remote_dir, target_size, local_dir, prev_i
             send_image_via_sftp(ssh, frame, remote_preview_path)
         except Exception as e:
             print(f"Error sending frame {idx+1}: {e}.")
-        # 常にローカル log には保存しておく
         save_preview_to_log(local_dir, frame, preview_filename)
         time.sleep(transition_interval)
 
@@ -139,35 +136,37 @@ def save_file_to_log(filepath):
     os.rename(filepath, new_path)
     print(f"File moved to log: {new_path}")
 
-def process_destination(dest, port, username, password):
+def process_local_directory(local_dir, dest_list):
     """
-    1つの送付先について、local_dir 内の PNG ファイルを更新時刻順に処理し、
-    画像1（prev_img）から画像2（new_img）へのトランジションを生成してSSH送信します。
-    各トランジションの各プレビュー画像は、画像1と画像2のファイル名およびフレーム番号を含む名前で
-    送信後、log フォルダに保存されます。処理済みの元画像も log フォルダに移動します。
+    指定されたローカルディレクトリ内の PNG ファイルを更新時刻順に処理し、
+    同じ local_dir を参照する各転送先（dest_list）へ初回画像またはトランジション画像を送信します。
+    各転送先は独自の SSH 接続および前回画像状態を保持し、処理完了後に
+    そのファイルは log フォルダへ移動されます。
     """
-    host = dest.get("host")
-    local_dir = dest.get("local_dir")
-    remote_dir = dest.get("remote_dir")
-
-    print(f"\nProcessing destination {host}: local_dir='{local_dir}', remote_dir='{remote_dir}'")
+    print(f"\nProcessing local directory '{local_dir}' for {len(dest_list)} destination(s).")
+    # 各転送先ごとに SSH 接続を確立し、状態を保持する
+    connections = {}
+    for dest in dest_list:
+        host = dest.get("host")
+        remote_dir = dest.get("remote_dir")
+        port = SSH_CONFIG.get("port", 22)
+        username = SSH_CONFIG.get("username")
+        password = SSH_CONFIG.get("password")
+        print(f"[{host}] Connecting to {host}:{port} as {username} ...")
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(host, port=port, username=username, password=password)
+        # リモートディレクトリの存在確認と作成
+        sftp = ssh.open_sftp()
+        try:
+            sftp.stat(remote_dir)
+        except IOError:
+            print(f"[{host}] Remote directory '{remote_dir}' does not exist. Creating it.")
+            sftp.mkdir(remote_dir)
+        sftp.close()
+        connections[host] = {"ssh": ssh, "prev_img": None, "prev_filename": None, "dest": dest}
 
     target_size = get_target_size(local_dir)
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    print(f"Connecting to {host}:{port} as {username} ...")
-    ssh.connect(host, port=port, username=username, password=password)
-
-    sftp = ssh.open_sftp()
-    try:
-        sftp.stat(remote_dir)
-    except IOError:
-        print(f"Remote directory '{remote_dir}' does not exist on {host}. Creating it.")
-        sftp.mkdir(remote_dir)
-    sftp.close()
-
-    prev_img = None
-    prev_filename = None
     files = sorted(glob.glob(os.path.join(local_dir, "*.png")), key=os.path.getmtime)
 
     for filepath in files:
@@ -175,49 +174,60 @@ def process_destination(dest, port, username, password):
             print(f"Processing file: {filepath}")
             new_img = load_and_resize_image(filepath, target_size)
             new_filename = os.path.splitext(os.path.basename(filepath))[0]
-            if prev_img is None:
-                remote_preview_path = os.path.join(remote_dir, f"{new_filename}_initial.png")
-                print("No previous image; sending new image directly.")
-                try:
-                    send_image_via_sftp(ssh, new_img, remote_preview_path)
-                except Exception as e:
-                    print(f"Error sending initial image: {e}.")
-                save_preview_to_log(local_dir, new_img, f"{new_filename}_initial.png")
-                prev_img = new_img
-                prev_filename = new_filename
-                keep_time = GEN_CONFIG.get("keep", 5)
-                print(f"Holding preview for {keep_time} seconds ...")
-                time.sleep(keep_time)
-            else:
-                print("Starting pixelwise transition from previous image to new image ...")
-                transfer_transition_sequence(ssh, remote_dir, target_size, local_dir, prev_img, new_img, prev_filename, new_filename)
-                prev_img = new_img
-                prev_filename = new_filename
-            # 移動前の元ファイルは日時付きで log フォルダに保存
+            for host, conn in connections.items():
+                ssh = conn["ssh"]
+                dest = conn["dest"]
+                remote_dir = dest.get("remote_dir")
+                if conn["prev_img"] is None:
+                    # 初回画像の送信
+                    remote_preview_path = os.path.join(remote_dir, f"{new_filename}_initial.png")
+                    print(f"[{host}] No previous image; sending new image directly as initial.")
+                    try:
+                        send_image_via_sftp(ssh, new_img, remote_preview_path)
+                    except Exception as e:
+                        print(f"[{host}] Error sending initial image: {e}.")
+                    save_preview_to_log(local_dir, new_img, f"{new_filename}_initial.png")
+                    conn["prev_img"] = new_img
+                    conn["prev_filename"] = new_filename
+                    keep_time = GEN_CONFIG.get("keep", 5)
+                    print(f"[{host}] Holding preview for {keep_time} seconds ...")
+                    time.sleep(keep_time)
+                else:
+                    # トランジション処理
+                    print(f"[{host}] Starting pixelwise transition from previous image to new image ...")
+                    transfer_transition_sequence(ssh, remote_dir, target_size, local_dir,
+                                                   conn["prev_img"], new_img,
+                                                   conn["prev_filename"], new_filename)
+                    conn["prev_img"] = new_img
+                    conn["prev_filename"] = new_filename
+            # 全転送先で処理が完了したら、元のファイルを log フォルダへ移動
             save_file_to_log(filepath)
         except Exception as e:
             print(f"Error processing {filepath}: {e}. Skipping this file.")
 
-    ssh.close()
-    print(f"Processing for destination {host} complete.")
+    # すべての SSH 接続をクローズ
+    for host, conn in connections.items():
+        conn["ssh"].close()
+        print(f"[{host}] Processing complete and SSH connection closed.")
 
 def main():
     check_interval = GEN_CONFIG.get("check_interval", 30)  # フォルダ監視間隔（秒）
-    port     = SSH_CONFIG.get("port", 22)
-    username = SSH_CONFIG.get("username")
-    password = SSH_CONFIG.get("password")
+    # 同じ local_dir を参照する転送先をグループ化する
+    local_dir_to_destinations = {}
+    for dest in SSH_CONFIG.get("destinations", []):
+        local_dir = dest.get("local_dir")
+        if local_dir not in local_dir_to_destinations:
+            local_dir_to_destinations[local_dir] = []
+        local_dir_to_destinations[local_dir].append(dest)
 
     while True:
-        for dest in SSH_CONFIG.get("destinations", []):
-            try:
-                local_dir = dest.get("local_dir")
-                image_files = glob.glob(os.path.join(local_dir, "*.png"))
-                if image_files:
-                    process_destination(dest, port, username, password)
-                else:
-                    print(f"No new images in '{local_dir}' for destination {dest.get('host')}.")
-            except Exception as e:
-                print(f"Error processing destination {dest.get('host')}: {e}. Skipping this destination.")
+        for local_dir, dest_list in local_dir_to_destinations.items():
+            image_files = glob.glob(os.path.join(local_dir, "*.png"))
+            if image_files:
+                process_local_directory(local_dir, dest_list)
+            else:
+                hosts = [d.get("host") for d in dest_list]
+                print(f"No new images in '{local_dir}' for destinations: {hosts}")
         print(f"Waiting for {check_interval} seconds before next folder check...\n")
         time.sleep(check_interval)
 
