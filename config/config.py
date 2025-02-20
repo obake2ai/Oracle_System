@@ -3,7 +3,7 @@ STYLEGAN_CONFIG = {
     "out_dir": "_out",
     "model": "models/embryo-stylegan3-r-network-snapshot-000096",
     "labels": None,
-    "size": "1610-720",            # 出力解像度 2058-920:8fps
+    "size": "2058-920",            # 出力解像度 2058-920:8fps 1610-720:14fps
     "scale_type": "pad",
     "latmask": None,
     "nXY": "1-1",                # latent blending 用：フレームの分割数（例："1-1"）
@@ -15,7 +15,7 @@ STYLEGAN_CONFIG = {
     "noise_seed": 3025,
     "sg_gpu": "cuda:0",
     # アニメーション関連
-    "frames": "240-180",          # （未使用だが互換性のため）
+    "frames": "240-200",          # （未使用だが互換性のため）
     "cubic": False,
     "gauss": False,
     # SG3 の変換（アニメーション）パラメータ
@@ -43,7 +43,7 @@ STYLEGAN_CONFIG = {
     "font_path_ja": "data/fonts/FOT-TsukuGoPr5-D.otf",
     "font_path_en": "data/fonts/Acumin-RPro.otf",
     "default_font_scale": 0.5,
-    "default_font_thickness": 1,
+    "default_font_thickness": 0.5,
     "font_color": (255, 255, 255),
     "subtitle_ja_font_size": 21,  # 日本語字幕のフォントサイズ（pt）
     "subtitle_en_font_size": 24,  # 英語字幕のフォントサイズ（pt）
