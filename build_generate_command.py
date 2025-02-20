@@ -13,8 +13,8 @@ def compute_size_from_outdir(out_dir, base_size = 128):
     それ以外の場合は、GEN_CONFIG に設定されている 'size' をそのまま返します。
     """
     base = os.path.basename(out_dir)
-    if "12x6" in base:
-        width = 6 * base_size
+    if "12x3" in base:
+        width = 3 * base_size
         height = 12 * base_size
         return f"{width}-{height}"
     elif "4x3" in base:
@@ -83,7 +83,7 @@ def build_generate_image_command():
 
 def main():
     # 複数の保存先ディレクトリ（各保存先で別々の画像生成を行う）
-    out_dirs = ['outputs/12x6', 'outputs/4x3-A', 'outputs/4x3-B', 'outputs/4x3-C']
+    out_dirs = ['outputs/12x3-A', 'outputs/12x3-B']
 
     for out_dir in out_dirs:
         # 動的に GEN_CONFIG を更新
