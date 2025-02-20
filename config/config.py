@@ -43,7 +43,7 @@ STYLEGAN_CONFIG = {
     "font_path_ja": "data/fonts/FOT-TsukuGoPr5-D.otf",
     "font_path_en": "data/fonts/Acumin-RPro.otf",
     "default_font_scale": 0.5,
-    "default_font_thickness": 2,
+    "default_font_thickness": 1,
     "font_color": (255, 255, 255),
     "subtitle_ja_font_size": 21,  # 日本語字幕のフォントサイズ（pt）
     "subtitle_en_font_size": 24,  # 英語字幕のフォントサイズ（pt）
