@@ -3,7 +3,7 @@ STYLEGAN_CONFIG = {
     "out_dir": "_out",
     "model": "models/embryo-stylegan3-r-network-snapshot-000096",
     "labels": None,
-    "size": "2058-920",            # 出力解像度 (後で [height, width] に変換) "1920-708"
+    "size": "1610-720",            # 出力解像度 2058-920:8fps
     "scale_type": "pad",
     "latmask": None,
     "nXY": "1-1",                # latent blending 用：フレームの分割数（例："1-1"）
