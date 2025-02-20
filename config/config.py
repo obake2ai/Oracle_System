@@ -25,7 +25,7 @@ STYLEGAN_CONFIG = {
     "shiftmax": 0.2,
     "digress": -12,
     # Affine Conversion（拡大縮小）
-    "affine_scale": "0.8-0.8",
+    "affine_scale": "0.7-0.7",
     # 動画保存などの設定
     "framerate": 30,
     "prores": False,
