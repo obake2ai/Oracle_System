@@ -351,48 +351,49 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         frame_idx += 1
 
 # -------------------------------
-# create_text_overlay: テキストオーバーレイ画像生成（透過度付き）
+# create_text_overlay: 字幕オーバーレイ画像生成（透過度付き）
 # -------------------------------
-def create_text_overlay(frame_shape, texts, font_scale, thickness, font_path_en, font_path_ja):
+def create_text_overlay(frame_shape, texts, subtitle_ja_y, subtitle_en_y, thickness, font_path_en, font_path_ja, font_size_ja, font_size_en):
     h, w = frame_shape[:2]
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     try:
-        font_en = ImageFont.truetype(font_path_en, int(32 * font_scale))
-    except Exception as e:
-        print("英語フォント読み込みエラー:", e)
-        font_en = ImageFont.load_default()
-    try:
-        font_ja = ImageFont.truetype(font_path_ja, int(32 * font_scale))
+        font_ja = ImageFont.truetype(font_path_ja, font_size_ja)
     except Exception as e:
         print("日本語フォント読み込みエラー:", e)
         font_ja = ImageFont.load_default()
+    try:
+        font_en = ImageFont.truetype(font_path_en, font_size_en)
+    except Exception as e:
+        print("英語フォント読み込みエラー:", e)
+        font_en = ImageFont.load_default()
+
     ja_lines = texts.get("ja", [])
     en_lines = texts.get("en", [])
-    default_line_height = get_text_size(font_ja, "A")[1]
-    ja_block_height = sum(get_text_size(font_ja, line)[1] for line in ja_lines) if ja_lines else 0
-    en_block_height = sum(get_text_size(font_en, line)[1] for line in en_lines) if en_lines else 0
-    combined_height = ja_block_height + (default_line_height if ja_lines and en_lines else 0) + en_block_height
-    start_y = (h - combined_height) // 2
-    y = start_y
-    # 透過度 90% (alpha=230)
+
+    # 指定されたパーセンテージ位置から開始（画像高さに対する割合）
+    y_ja = int(h * (subtitle_ja_y / 100.0))
+    y_en = int(h * (subtitle_en_y / 100.0))
+
+    draw = ImageDraw.Draw(overlay)
     text_fill = (255, 255, 255, 230)
     stroke_fill = (0, 0, 0, 230)
+
+    # 日本語字幕（各行中央揃え）
     for line in ja_lines:
         line_w, line_h = get_text_size(font_ja, line)
         x = (w - line_w) // 2
-        draw = ImageDraw.Draw(overlay)
-        draw.text((x, y), line, font=font_ja, fill=text_fill,
+        draw.text((x, y_ja), line, font=font_ja, fill=text_fill,
                   stroke_width=thickness, stroke_fill=stroke_fill)
-        y += line_h
-    if ja_lines and en_lines:
-        y += default_line_height
+        y_ja += line_h
+
+    # 英語字幕（各行中央揃え）
     for line in en_lines:
         line_w, line_h = get_text_size(font_en, line)
         x = (w - line_w) // 2
-        draw = ImageDraw.Draw(overlay)
-        draw.text((x, y), line, font=font_en, fill=text_fill,
+        draw.text((x, y_en), line, font=font_en, fill=text_fill,
                   stroke_width=thickness, stroke_fill=stroke_fill)
-        y += line_h
+        y_en += line_h
+
     return np.array(overlay)
 
 # -------------------------------
@@ -636,23 +637,29 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             else:
                 new_text = {"en": [], "ja": []}
 
-            # 既存のキャッシュ（current_overlay）が存在し、かつフレームサイズが変わっていなければ再生成しない
+            # オーバーレイ画像を再生成（テキスト内容またはフレームサイズが変わった場合）
             if new_text != current_text or current_overlay is None or current_overlay.shape[:2] != curr_frame.shape[:2]:
                 current_text = new_text
-                current_overlay = create_text_overlay(curr_frame.shape, current_text, font_scale, font_thickness,
-                                                      STYLEGAN_CONFIG['font_path_en'], STYLEGAN_CONFIG['font_path_ja'])
+                current_overlay = create_text_overlay(
+                    curr_frame.shape,
+                    current_text,
+                    STYLEGAN_CONFIG['subtitle_ja_y'],   # 例: 上端から 10%
+                    STYLEGAN_CONFIG['subtitle_en_y'],   # 例: 上端から 80%
+                    font_thickness,
+                    STYLEGAN_CONFIG['font_path_en'],
+                    STYLEGAN_CONFIG['font_path_ja'],
+                    STYLEGAN_CONFIG['subtitle_ja_font_size'],  # 例: 32 pt
+                    STYLEGAN_CONFIG['subtitle_en_font_size']   # 例: 28 pt
+                )
 
-            # blend_overlay 内で変換・コピーを実施しているため、ここではそのまま curr_frame を渡す
             if current_overlay is not None:
                 frame_with_text = blend_overlay(curr_frame, current_overlay)
             else:
                 frame_with_text = curr_frame
 
-            # その後、letterbox_frame 等の処理はそのまま
             letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
             cv2.imshow(window_name, letterboxed_frame)
 
-            # fps計測やキー入力処理はそのまま
             fps_count += 1
             elapsed = time.time() - t0
             if elapsed >= 1.0:
@@ -665,14 +672,13 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 stop_event.set()
                 break
 
-        cv2.destroyAllWindows()  # ループ終了時のみウィンドウを破棄
+        cv2.destroyAllWindows()
     finally:
-        # プロファイリング終了時、累積時間が閾値以上の関数のみを表示する
         if profiler is not None:
             profiler.disable()
             ps = pstats.Stats(profiler)
             ps.strip_dirs().sort_stats("cumtime")
-            threshold = 0.1  # 0.1秒以上かかった関数のみ表示（必要に応じて調整）
+            threshold = 0.1
             print("\n=== プロファイリング結果 (累積時間が {:.3f} 秒以上の関数のみ) ===".format(threshold))
             sorted_stats = sorted(ps.stats.items(), key=lambda x: x[1][3], reverse=True)
             for func, stat in sorted_stats:

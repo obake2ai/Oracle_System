@@ -45,6 +45,10 @@ STYLEGAN_CONFIG = {
     "default_font_scale": 0.5,
     "default_font_thickness": 2,
     "font_color": (255, 255, 255),
+    "subtitle_ja_font_size": 28,  # 日本語字幕のフォントサイズ（pt）
+    "subtitle_en_font_size": 31,  # 英語字幕のフォントサイズ（pt）
+    "subtitle_ja_y": 5,          # 日本語字幕の開始位置（上端から 10% の位置）
+    "subtitle_en_y": 95,          # 英語字幕の開始位置（上端から 80% の位置）
     # ---- スライドショーの設定 ----
     "display_time": 10,
     "clear_time": 0.5
