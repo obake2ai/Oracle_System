@@ -70,7 +70,7 @@ GEN_CONFIG = {
     'splitfine': 0.0,
     'splitmax': None,
     # truncation psi 値
-    'trunc': 0.9,
+    'trunc': 1.0,
     'save_lat': False,
     'verbose': False,
     # 初期乱数シード
@@ -95,5 +95,7 @@ GEN_CONFIG = {
     # 画像出力モードにする（動画ではなく各フレームを個別画像として保存）
     'image': True,
     # 画像生成の実行間隔（秒）
-    'interval': 60,
+    'ssh_check_interval': 60,
+    'transition_interval': 180,
+    'generate_interval': 300
 }

@@ -91,7 +91,7 @@ def transfer_transition_sequence(ssh, remote_dir, target_size, local_dir, prev_i
     各フレームはファイル名に frame 番号を含み、ローカルの log フォルダにも保存されます。
     最後に new_img を送信し、keep 秒間保持します。
     """
-    total_interval = GEN_CONFIG.get("interval", 300)              # 総トランジション時間（秒）
+    total_interval = GEN_CONFIG.get("transition_interval", 300)              # 総トランジション時間（秒）
     transition_interval = GEN_CONFIG.get("transition_interval", 1)  # 各中間フレームの送信間隔（秒）
     keep_time = GEN_CONFIG.get("keep", 5)                           # 最終画像の保持時間（秒）
     num_frames = max(1, int(total_interval / transition_interval))
@@ -211,7 +211,7 @@ def process_local_directory(local_dir, dest_list):
         print(f"[{host}] Processing complete and SSH connection closed.")
 
 def main():
-    check_interval = GEN_CONFIG.get("check_interval", 30)  # フォルダ監視間隔（秒）
+    check_interval = GEN_CONFIG.get("ssh_check_interval", 30)  # フォルダ監視間隔（秒）
     # 同じ local_dir を参照する転送先をグループ化する
     local_dir_to_destinations = {}
     for dest in SSH_CONFIG.get("destinations", []):
