@@ -552,6 +552,12 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         )
         text_thread.start()
 
+        out_dirs = ['outputs/12x3-A', 'outputs/12x3-B']
+        for out_dir in out_dirs:
+            os.makedirs(out_dir, exist_ok=True)
+        screenshot_interval = GEN_CONFIG.get("generate_interval", 300)
+        last_screenshot_time = time.time()
+
         frame_queue = queue.Queue(maxsize=30)
         stop_event = threading.Event()
         gan_thread = threading.Thread(target=stylegan_frame_generator,
@@ -641,6 +647,15 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
             letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
             cv2.imshow(window_name, letterboxed_frame)
+
+            # ----- スクリーンショット保存の処理 -----
+            if now - last_screenshot_time >= screenshot_interval:
+                filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + ".png"
+                for save_dir in out_dirs:
+                    save_path = os.path.join(save_dir, filename)
+                    cv2.imwrite(save_path, letterboxed_frame)
+                print(f"\n[INFO] Screenshot saved as {filename} in directories: {out_dirs}")
+                last_screenshot_time = now
 
             fps_count += 1
             elapsed = time.time() - t0
