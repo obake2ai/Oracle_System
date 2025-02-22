@@ -31,12 +31,24 @@ import gc
 import subprocess
 import cProfile, pstats, io  # プロファイリング用モジュール
 
+import re
+
 # psutil（メモリ監視用）
 try:
     import psutil
     process = psutil.Process(os.getpid())
 except ImportError:
     psutil = None
+
+def remove_garbled_characters(text: str) -> str:
+    """
+    文字列中のチェックボックスなどの文字化け（例: □, ■, ☐, ☑, ☒, �）を除去する。
+    必要に応じてパターンを拡張してください。
+    """
+    pattern = r"[□■☐☑☒�]"
+    return re.sub(pattern, "", text)
+
+
 
 # -------------------------------
 # xrandr の出力を利用して総解像度を取得する
@@ -177,7 +189,10 @@ def text_generation_worker(gpt_model_path, gpt_prompt, max_new_tokens, context_l
         if en_text.startswith(gpt_prompt):
             en_text = en_text[len(gpt_prompt):].strip()
         en_text = en_text.replace("\n", " ").strip()
+        en_text = remove_garbled_characters(en_text)
         ja_text = translate_to_japanese(en_text)
+        ja_text = ja_text.replace("\n", " ").strip()
+        ja_text = remove_garbled_characters(ja_text)
         en_lines = wrap_text(en_text, font_en, max_text_width)
         ja_lines = wrap_text(ja_text, font_ja, max_text_width)
         text_line = {"en": en_lines, "ja": ja_lines}
