@@ -83,7 +83,7 @@ print(f"総解像度: {actual_screen_width}x{actual_screen_height}")
 from config.api import OPENAI_API_KEY
 openai.api_key = OPENAI_API_KEY
 
-from config.config import STYLEGAN_CONFIG
+from config.config import STYLEGAN_CONFIG, GEN_CONFIG
 from config.prompts import CHATGPT_PROMPTS
 from util.utilgan import latent_anima
 from src.realtime_generate import infinite_latent_smooth, infinite_latent_random_walk, img_resize_for_cv2
