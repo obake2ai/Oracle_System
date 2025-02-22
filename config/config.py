@@ -50,8 +50,8 @@ STYLEGAN_CONFIG = {
     "subtitle_ja_y": 5,          # 日本語字幕の開始位置（上端から 10% の位置）
     "subtitle_en_y": 95,          # 英語字幕の開始位置（上端から 80% の位置）
     # ---- スライドショーの設定 ----
-    "display_time": 10,
-    "clear_time": 0.5
+    "display_time": 11,
+    "clear_time": 1.0
 }
 
 #1F
@@ -97,5 +97,5 @@ GEN_CONFIG = {
     # 画像生成の実行間隔（秒）
     'ssh_check_interval': 60,
     'transition_interval': 180,
-    'generate_interval': 10
+    'generate_interval': 600
 }
