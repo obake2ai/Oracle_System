@@ -97,5 +97,5 @@ GEN_CONFIG = {
     # 画像生成の実行間隔（秒）
     'ssh_check_interval': 60,
     'transition_interval': 180,
-    'generate_interval': 300
+    'generate_interval': 10
 }
