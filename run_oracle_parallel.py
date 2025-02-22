@@ -554,7 +554,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
         out_dirs = ['outputs/12x3-A', 'outputs/12x3-B']
         for out_dir in out_dirs:
-        os.makedirs(out_dir, exist_ok=True)
+            os.makedirs(out_dir, exist_ok=True)
         # フォルダ内の全ファイルおよびサブディレクトリを削除
         for filename in os.listdir(out_dir):
             file_path = os.path.join(out_dir, filename)
