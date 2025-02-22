@@ -11,37 +11,37 @@ SSH_CONFIG = {
         {
             'host': '192.168.10.33',
             'hostname': 'zero2wh07.local',
-            'local_dir': 'outputs/12x3-A',
+            'local_dir': '\\wsl.localhost\Ubuntu-22.04\home\oracle\Oracle_System\outputs\12x3-A',
             'remote_dir': '/home/pi/Oracle_LEDmatrix/share/12x3'
         },
         {
             'host': '192.168.10.29',
             'hostname': 'zero2wh05.local',
-            'local_dir': 'outputs/12x3-A',
+            'local_dir': '\\wsl.localhost\Ubuntu-22.04\home\oracle\Oracle_System\outputs\12x3-A',
             'remote_dir': '/home/pi/Oracle_LEDmatrix/share/12x3'
         },
         {
             'host': '192.168.10.26',
             'hostname': 'zero2wh06.local',
-            'local_dir': 'outputs/12x3-A',
+            'local_dir': '\\wsl.localhost\Ubuntu-22.04\home\oracle\Oracle_System\outputs\12x3-A',
             'remote_dir': '/home/pi/Oracle_LEDmatrix/share/12x3'
         },
         {
             'host': '192.168.10.35',
             'hostname': 'zero2wh01.local',
-            'local_dir': 'outputs/12x3-B',
+            'local_dir': '\\wsl.localhost\Ubuntu-22.04\home\oracle\Oracle_System\outputs\12x3-B',
             'remote_dir': '/home/pi/Oracle_LEDmatrix/share/12x3'
         },
         {
             'host': '192.168.10.34',
             'hostname': 'zero2wh02.local',
-            'local_dir': 'outputs/12x3-B',
+            'local_dir': '\\wsl.localhost\Ubuntu-22.04\home\oracle\Oracle_System\outputs\12x3-B',
             'remote_dir': '/home/pi/Oracle_LEDmatrix/share/12x3'
         },
         {
             'host': '192.168.10.22',
             'hostname': 'zero2wh03.local',
-            'local_dir': 'outputs/12x3-B',
+            'local_dir': '\\wsl.localhost\Ubuntu-22.04\home\oracle\Oracle_System\outputs\12x3-B',
             'remote_dir': '/home/pi/Oracle_LEDmatrix/share/12x3'
         },
     ]
