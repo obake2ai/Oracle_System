@@ -30,7 +30,7 @@ import datetime
 import gc
 import subprocess
 import cProfile, pstats, io  # プロファイリング用モジュール
-
+import shutil
 import re
 
 # psutil（メモリ監視用）
@@ -554,7 +554,18 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
         out_dirs = ['outputs/12x3-A', 'outputs/12x3-B']
         for out_dir in out_dirs:
-            os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(out_dir, exist_ok=True)
+        # フォルダ内の全ファイルおよびサブディレクトリを削除
+        for filename in os.listdir(out_dir):
+            file_path = os.path.join(out_dir, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                print(f"ファイル {file_path} の削除に失敗しました。理由: {e}")
+
         screenshot_interval = GEN_CONFIG.get("generate_interval", 300)
         last_screenshot_time = time.time()
 
@@ -649,13 +660,13 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             cv2.imshow(window_name, letterboxed_frame)
 
             # ----- スクリーンショット保存の処理 -----
-            # if now - last_screenshot_time >= screenshot_interval:
-            #     filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + ".png"
-            #     for save_dir in out_dirs:
-            #         save_path = os.path.join(save_dir, filename)
-            #         cv2.imwrite(save_path, letterboxed_frame)
-            #     print(f"\n[INFO] Screenshot saved as {filename} in directories: {out_dirs}")
-            #     last_screenshot_time = now
+            if now - last_screenshot_time >= screenshot_interval:
+                filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + ".png"
+                for save_dir in out_dirs:
+                    save_path = os.path.join(save_dir, filename)
+                    cv2.imwrite(save_path, letterboxed_frame)
+                print(f"\n[INFO] Screenshot saved as {filename} in directories: {out_dirs}")
+                last_screenshot_time = now
 
             fps_count += 1
             elapsed = time.time() - t0
