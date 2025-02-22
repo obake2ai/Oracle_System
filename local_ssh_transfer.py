@@ -141,21 +141,37 @@ def process_local_directory(local_dir, dest_list):
     指定されたローカルディレクトリ内の PNG ファイルを更新時刻順に処理し、
     同じ local_dir を参照する各転送先（dest_list）へ初回画像またはトランジション画像を送信します。
     各転送先は独自の SSH 接続および前回画像状態を保持し、処理完了後に
-    そのファイルは log フォルダへ移動されます。
+    そのファイルは log フォルダへ移動保存されます。
     """
     print(f"\nProcessing local directory '{local_dir}' for {len(dest_list)} destination(s).")
     # 各転送先ごとに SSH 接続を確立し、状態を保持する
     connections = {}
     for dest in dest_list:
         host = dest.get("host")
+        ip = dest.get("ip")  # IPアドレスが指定されている場合に利用する
         remote_dir = dest.get("remote_dir")
         port = SSH_CONFIG.get("port", 22)
         username = SSH_CONFIG.get("username")
         password = SSH_CONFIG.get("password")
-        print(f"[{host}] Connecting to {host}:{port} as {username} ...")
+
+        print(f"[{host}] Attempting connection using hostname {host}:{port} as {username} ...")
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(host, port=port, username=username, password=password)
+        try:
+            ssh.connect(host, port=port, username=username, password=password, timeout=10)
+        except Exception as e:
+            print(f"[{host}] Connection via hostname failed: {e}")
+            if ip:
+                print(f"[{host}] Trying connection using IP address {ip}:{port} ...")
+                try:
+                    ssh.connect(ip, port=port, username=username, password=password, timeout=10)
+                except Exception as e:
+                    print(f"[{host}] Connection via IP address {ip} failed: {e}. Skipping this destination.")
+                    continue  # 接続に失敗した場合はスルーする
+            else:
+                print(f"[{host}] No alternative IP provided, skipping destination.")
+                continue
+
         # リモートディレクトリの存在確認と作成
         sftp = ssh.open_sftp()
         try:
