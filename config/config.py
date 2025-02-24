@@ -32,11 +32,11 @@ STYLEGAN_CONFIG = {
     "variations": 1,
     # 無限リアルタイム生成の方式
     "method": "random_walk",       #"smooth" or "random_walk"
-    "chunk_size": 10000,           #大きいほど変化がゆっくりに
+    "chunk_size": 12000,           #大きいほど変化がゆっくりに
     # ---- 以下、GPT 関連の設定 ----
     "gpt_model": "./models/gpt_model_epoch_16000.pth",
     "gpt_prompt": "I'm praying: ",
-    "max_new_tokens": 30,
+    "max_new_tokens": 20,
     "context_length": 512,
     "gpt_gpu": "cuda:0",
     # ---- 以下、オーバーレイテキスト用フォント設定 ----
