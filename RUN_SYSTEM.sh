@@ -6,6 +6,7 @@ git pull
 
 # 2) 仮想環境をアクティベート
 source venv/bin/activate
+export TORCH_CUDA_ARCH_LIST="8.6"
 
 # 3) pythonスクリプトをバックグラウンドで実行
 python3 run_oracle_parallel.py &
