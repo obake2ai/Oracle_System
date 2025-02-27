@@ -165,7 +165,7 @@ def infinite_latent_smooth(z_dim, device, cubic=False, gauss=False, seed=None,
 # =============================================
 # 2) ランダムウォークで無限に返すジェネレータ
 # =============================================
-def infinite_latent_random_walk(z_dim, device, seed=None, step_size=0.02):
+def infinite_latent_random_walk(z_dim, device, seed=None, step_size=0.002):
     """
     毎フレーム、前回の潜在ベクトルに少しだけ乱数を加えて更新する。
     ピクピク動きやすいが簡単。
