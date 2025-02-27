@@ -560,7 +560,8 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 @click.option('--variations', type=int, default=STYLEGAN_CONFIG['variations'], help="number of variations")
 @click.option('--method', type=click.Choice(["smooth", "random_walk"]), default=STYLEGAN_CONFIG['method'],
               help="infinite realtime generation method")
-@click.option('--chunk_size', type=int, default=STYLEGAN_CONFIG['chunk_size'], help="step size for infinite generation")
+@click.option('--chunk_size', type=int, default=STYLEGAN_CONFIG['chunk_size'], help="step size for infinite generation (smooth)")
+@click.option('--random_step_size', type=float, default=STYLEGAN_CONFIG['random_step_size'], help="step size for infinite generation (random)")
 @click.option('--gpt-model', type=str, default=STYLEGAN_CONFIG['gpt_model'], help="GPT model checkpoint path")
 @click.option('--gpt-prompt', type=str, default=STYLEGAN_CONFIG['gpt_prompt'], help="GPT generation prompt")
 @click.option('--max-new-tokens', type=int, default=STYLEGAN_CONFIG['max_new_tokens'], help="maximum new tokens for GPT")
@@ -577,7 +578,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss,
         anim_trans, anim_rot, shiftbase, shiftmax,
-        digress, affine_scale, framerate, prores, variations, method, chunk_size,
+        digress, affine_scale, framerate, prores, variations, method, chunk_size, random_step_size,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu,
         display_time, clear_time, font_scale, font_thickness,
         sg_gpu=None, debug=False, fullscreen=True):
@@ -653,6 +654,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             "variations": variations,
             "method": method,
             "chunk_size": chunk_size,
+            "random_step_size": random_step_size,
             "stylegan_gpu": stylegan_device,
             "font_scale": font_scale,
             "font_thickness": font_thickness,
