@@ -23,7 +23,7 @@ STYLEGAN_CONFIG = {
     "anim_rot": True,
     "shiftbase": 0.5,
     "shiftmax": 0.2,
-    "digress": -12,
+    "digress": -10,
     # Affine Conversion（拡大縮小）
     "affine_scale": "0.7-0.7",
     # 動画保存などの設定
@@ -32,7 +32,8 @@ STYLEGAN_CONFIG = {
     "variations": 1,
     # 無限リアルタイム生成の方式
     "method": "random_walk",       #"smooth" or "random_walk"
-    "chunk_size": 30000,           #大きいほど変化がゆっくりに
+    "chunk_size": 10000,           #大きいほど変化がゆっくりに for smooth
+    "random_step_size": 0.001,     #大きいほど変化がゆっくりに for random
     # ---- 以下、GPT 関連の設定 ----
     "gpt_model": "./models/gpt_model_epoch_16000.pth",
     "gpt_prompt": "I'm praying: ",

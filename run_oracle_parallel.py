@@ -472,7 +472,7 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
     # どの無限生成メソッドを使うか
     if config_args["method"] == "random_walk":
         print(" [Info] Using random_walk for latents.")
-        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=0.001)
+        latent_gen = infinite_latent_random_walk(z_dim=z_dim, device=device, seed=noise_seed, step_size=config_args["random_step_size"])
     else:
         print(" [Info] Using smooth for latents.")
         latent_gen = infinite_latent_smooth(
