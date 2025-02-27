@@ -19,8 +19,8 @@ STYLEGAN_CONFIG = {
     "cubic": False,
     "gauss": False,
     # SG3 の変換（アニメーション）パラメータ
-    "anim_trans": True,
-    "anim_rot": True,
+    "anim_trans": False,
+    "anim_rot": False,
     "shiftbase": 0.5,
     "shiftmax": 0.2,
     "digress": -10,
