@@ -12,7 +12,7 @@ STYLEGAN_CONFIG = {
     "trunc": 0.9,                # truncation psi
     "save_lat": False,           # latent 保存フラグ
     "verbose": False,
-    "noise_seed": 3026,
+    "noise_seed": 3027,
     "sg_gpu": "cuda:0",
     # アニメーション関連
     "frames": "240-200",          # （未使用だが互換性のため）
@@ -31,7 +31,7 @@ STYLEGAN_CONFIG = {
     "prores": False,
     "variations": 1,
     # 無限リアルタイム生成の方式
-    "method": "random_walk",       #"smooth" or "random_walk"
+    "method": "smooth",       #"smooth" or "random_walk"
     "chunk_size": 10000,           #大きいほど変化がゆっくりに for smooth
     "random_step_size": 0.0001,     #大きいほど変化がゆっくりに for random
     # ---- 以下、GPT 関連の設定 ----
