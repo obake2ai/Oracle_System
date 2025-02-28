@@ -32,7 +32,7 @@ STYLEGAN_CONFIG = {
     "variations": 1,
     # 無限リアルタイム生成の方式
     "method": "smooth",       #"smooth" or "random_walk"
-    "chunk_size": 10000,           #大きいほど変化がゆっくりに for smooth
+    "chunk_size": 30000,           #大きいほど変化がゆっくりに for smooth
     "random_step_size": 0.0001,     #大きいほど変化がゆっくりに for random
     # ---- 以下、GPT 関連の設定 ----
     "gpt_model": "./models/gpt_model_epoch_16000.pth",
