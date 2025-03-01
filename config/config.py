@@ -9,13 +9,13 @@ STYLEGAN_CONFIG = {
     "nXY": "1-1",                # latent blending 用：フレームの分割数（例："1-1"）
     "splitfine": 0.0,            # 分割時のエッジシャープネス（0～）
     "splitmax": None,            # 分割時の最大 latent 数（OOM 回避用）
-    "trunc": 0.9,                # truncation psi
+    "trunc": 1.0,                # truncation psi
     "save_lat": False,           # latent 保存フラグ
     "verbose": False,
-    "noise_seed": 3027,
+    "noise_seed": 3028,
     "sg_gpu": "cuda:0",
     # アニメーション関連
-    "frames": "240-200",          # （未使用だが互換性のため）
+    "frames": "1200-300",          # （未使用だが互換性のため）
     "cubic": False,
     "gauss": False,
     # SG3 の変換（アニメーション）パラメータ
@@ -32,7 +32,7 @@ STYLEGAN_CONFIG = {
     "variations": 1,
     # 無限リアルタイム生成の方式
     "method": "smooth",       #"smooth" or "random_walk"
-    "chunk_size": 30000,           #大きいほど変化がゆっくりに for smooth
+    "chunk_size": 40000,           #大きいほど変化がゆっくりに for smooth
     "random_step_size": 0.0001,     #大きいほど変化がゆっくりに for random
     # ---- 以下、GPT 関連の設定 ----
     "gpt_model": "./models/gpt_model_epoch_16000.pth",
