@@ -12,10 +12,10 @@ STYLEGAN_CONFIG = {
     "trunc": 1.0,                # truncation psi
     "save_lat": False,           # latent 保存フラグ
     "verbose": False,
-    "noise_seed": 3031,
+    "noise_seed": 3032,
     "sg_gpu": "cuda:0",
     # アニメーション関連
-    "frames": "400-300",          # （未使用だが互換性のため）
+    "frames": "600-300",          # （未使用だが互換性のため）
     "cubic": False,
     "gauss": False,
     # SG3 の変換（アニメーション）パラメータ
