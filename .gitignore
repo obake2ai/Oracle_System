@@ -1,2 +1,13 @@
 .DS_Store
 *.otf
+
+# IAMAS 2026 streaming: weights, outputs and test media stay out of git
+models/*.pkl
+models/*.pth
+models/*.pt
+stream/
+log/
+_out/
+outputs/
+player/fallback.mp4
+__pycache__/

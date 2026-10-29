@@ -12,7 +12,10 @@ Only works on 2D images and assumes
 `mode='bilinear'`, `padding_mode='zeros'`, `align_corners=False`."""
 
 import torch
-from pkg_resources import parse_version
+try:  # pkg_resources was removed from recent setuptools
+    from packaging.version import parse as parse_version
+except ImportError:
+    from pkg_resources import parse_version
 
 # pylint: disable=redefined-builtin
 # pylint: disable=arguments-differ

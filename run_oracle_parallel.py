@@ -70,22 +70,34 @@ def get_total_screen_resolution():
         print("xrandr から解像度取得エラー:", e)
         return None, None
 
-actual_screen_width, actual_screen_height = get_total_screen_resolution()
-if not actual_screen_width or not actual_screen_height:
-    try:
-        import tkinter as tk
-        root = tk.Tk()
-        actual_screen_width = root.winfo_screenwidth()
-        actual_screen_height = root.winfo_screenheight()
-        root.destroy()
-    except Exception as e:
-        actual_screen_width, actual_screen_height = 1920, 1080
-        print("xrandr, tkinter どちらも利用できなかったため、デフォルトの解像度 1920x1080 を使用します。")
-print(f"総解像度: {actual_screen_width}x{actual_screen_height}")
+def detect_screen_size():
+    """画面表示モードのときだけ呼ぶ (配信モードの headless 環境では呼ばない)。"""
+    width, height = get_total_screen_resolution()
+    if not width or not height:
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            width = root.winfo_screenwidth()
+            height = root.winfo_screenheight()
+            root.destroy()
+        except Exception as e:
+            width, height = 1920, 1080
+            print("xrandr, tkinter どちらも利用できなかったため、デフォルトの解像度 1920x1080 を使用します。")
+    print(f"総解像度: {width}x{height}")
+    return width, height
 
 # --- ここはあなたのプロジェクト環境に合わせて設定 ---
+# API キーは環境変数 OPENAI_API_KEY を優先する (クラウド実行時にキーをファイルに書かないため)
 from config.api import OPENAI_API_KEY
-openai.api_key = OPENAI_API_KEY
+openai.api_key = os.environ.get("OPENAI_API_KEY") or OPENAI_API_KEY
+
+from src.stream_sink import HLSSink
+
+# 重みが無い時の動作確認用の字幕 (作品の文ではない)
+PLACEHOLDER_TEXTS = [
+    ("[placeholder] subtitle test A", "［代用］字幕テスト A"),
+    ("[placeholder] subtitle test B", "［代用］字幕テスト B"),
+]
 
 from config.config import STYLEGAN_CONFIG, GEN_CONFIG
 from config.prompts import CHATGPT_PROMPTS
@@ -157,9 +169,14 @@ def translate_to_japanese(text):
 # バックグラウンドで連続してテキストを生成し、キューに格納する
 # -------------------------------
 def text_generation_worker(gpt_model_path, gpt_prompt, max_new_tokens, context_length, gpt_device,
-                           frame_width, font_scale, font_path_en, font_path_ja):
+                           frame_width, font_scale, font_path_en, font_path_ja,
+                           text_source="gpt", translate=True):
+    if text_source == "placeholder":
+        placeholder_text_worker(frame_width, font_scale, font_path_en, font_path_ja)
+        return
+
     tokenizer = tiktoken.get_encoding('gpt2')
-    checkpoint = torch.load(gpt_model_path, map_location=gpt_device)
+    checkpoint = torch.load(gpt_model_path, map_location=gpt_device, weights_only=False)
     state_dict = {key.replace("_orig_mod.", ""): value for key, value in checkpoint['model_state_dict'].items()}
     config = checkpoint['config']
     model = GPT(
@@ -206,7 +223,7 @@ def text_generation_worker(gpt_model_path, gpt_prompt, max_new_tokens, context_l
         en_text = remove_garbled_characters(en_text)
 
         # 翻訳
-        ja_text = translate_to_japanese(en_text)
+        ja_text = translate_to_japanese(en_text) if translate else ""
         ja_text = ja_text.replace("\n", " ").strip()
         ja_text = remove_garbled_characters(ja_text)
 
@@ -219,6 +236,32 @@ def text_generation_worker(gpt_model_path, gpt_prompt, max_new_tokens, context_l
         except queue.Full:
             # キューが満杯なら少し待って再トライ
             time.sleep(1)
+
+
+def placeholder_text_worker(frame_width, font_scale, font_path_en, font_path_ja):
+    """重み無しで配信経路を試すための代用字幕。GPT も翻訳 API も使わない。"""
+    font_size = int(32 * font_scale)
+    try:
+        font_en = ImageFont.truetype(font_path_en, font_size)
+    except Exception:
+        font_en = ImageFont.load_default()
+    try:
+        font_ja = ImageFont.truetype(font_path_ja, font_size)
+    except Exception:
+        font_ja = ImageFont.load_default()
+    max_text_width = int(frame_width * 0.9)
+    i = 0
+    while True:
+        en_text, ja_text = PLACEHOLDER_TEXTS[i % len(PLACEHOLDER_TEXTS)]
+        stamp = datetime.datetime.now().strftime("%H:%M:%S")
+        text_line = {"en": wrap_text(f"{en_text} {stamp}", font_en, max_text_width),
+                     "ja": wrap_text(f"{ja_text} {stamp}", font_ja, max_text_width)}
+        try:
+            text_queue.put(text_line, timeout=5)
+        except queue.Full:
+            time.sleep(1)
+        i += 1
+        time.sleep(2)
 
 
 # -------------------------------
@@ -575,13 +618,30 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
 @click.option('--debug', is_flag=True, default=False, help="Enable profiling of bottlenecks")
 @click.option('--fullscreen/--windowed', default=True,
               help="Use fullscreen mode if enabled; otherwise use window mode")
+# ---- IAMAS 2026: 配信モード (クラウド GPU で生成して会場へ HLS で流す) ----
+@click.option('--output', type=click.Choice(["screen", "hls"]), default="screen",
+              help="screen = 従来どおり画面に全画面表示 / hls = 画面なしで HLS 配信用に書き出す")
+@click.option('--out-size', type=str, default=None,
+              help="出力フレームの大きさ (例 1920x1080)。hls では必須級、screen では未指定なら画面解像度")
+@click.option('--hls-dir', type=str, default="stream", help="HLS の書き出し先フォルダ")
+@click.option('--stream-fps', type=int, default=30, help="配信のフレームレート")
+@click.option('--hls-encoder', type=str, default="libx264", help="libx264 / h264_nvenc")
+@click.option('--hls-bitrate', type=str, default="8M", help="映像ビットレート")
+@click.option('--text-source', type=click.Choice(["gpt", "placeholder"]), default="gpt",
+              help="placeholder = GPT の重み無しで代用字幕を出す (動作確認用)")
+@click.option('--translate/--no-translate', default=True, help="字幕の和訳 (OpenAI API) を行うか")
+@click.option('--font-ja', type=str, default=None, help="日本語字幕フォントのパス (未指定なら config)")
+@click.option('--font-en', type=str, default=None, help="英語字幕フォントのパス (未指定なら config)")
 def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, splitmax, trunc,
         save_lat, verbose, noise_seed, frames, cubic, gauss,
         anim_trans, anim_rot, shiftbase, shiftmax,
         digress, affine_scale, framerate, prores, variations, method, chunk_size, random_step_size,
         gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_gpu,
         display_time, clear_time, font_scale, font_thickness,
-        sg_gpu=None, debug=False, fullscreen=True):
+        sg_gpu=None, debug=False, fullscreen=True,
+        output="screen", out_size=None, hls_dir="stream", stream_fps=30,
+        hls_encoder="libx264", hls_bitrate="8M", text_source="gpt", translate=True,
+        font_ja=None, font_en=None):
     """
     CLIエントリポイント。--debug オプションでプロファイリング。
     """
@@ -670,12 +730,19 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         # GPT用device
         gpt_device = torch.device(gpt_gpu if torch.cuda.is_available() else "cpu")
 
+        # フォント (クラウドでは商用フォントを置けない場合があるので差し替え可能にする)
+        if font_ja:
+            STYLEGAN_CONFIG['font_path_ja'] = font_ja
+        if font_en:
+            STYLEGAN_CONFIG['font_path_en'] = font_en
+
         # 背景でGPTテキスト生成ワーカーを起動
         text_thread = threading.Thread(
             target=text_generation_worker,
             args=(gpt_model, gpt_prompt, max_new_tokens, context_length, gpt_device,
                   size_parsed[1],
-                  font_scale, STYLEGAN_CONFIG['font_path_en'], STYLEGAN_CONFIG['font_path_ja']),
+                  font_scale, STYLEGAN_CONFIG['font_path_en'], STYLEGAN_CONFIG['font_path_ja'],
+                  text_source, translate),
             daemon=True
         )
         text_thread.start()
@@ -686,6 +753,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             os.makedirs(d, exist_ok=True)
 
         # （サンプルとして）out_dirの中身を全消去
+        os.makedirs(out_dir, exist_ok=True)  # 新しいマシンでは未作成のため
         for filename in os.listdir(out_dir):
             file_path = os.path.join(out_dir, filename)
             try:
@@ -711,14 +779,27 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         )
         gan_thread.start()
 
-        print("リアルタイムプレビュー開始（'q' キーで終了）")
+        # 出力先の大きさ
+        if out_size:
+            ow, oh = [int(v) for v in out_size.lower().replace("-", "x").split("x")]
+        elif output == "screen":
+            ow, oh = detect_screen_size()
+        else:
+            ow, oh = size_parsed[1], size_parsed[0]
+        screen_width, screen_height = ow, oh
 
-        screen_width = actual_screen_width
-        screen_height = actual_screen_height
         window_name = "Display"
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        if fullscreen:
-            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        sink = None
+        if output == "screen":
+            print("リアルタイムプレビュー開始（'q' キーで終了）")
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            if fullscreen:
+                cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        else:
+            sink = HLSSink(hls_dir, screen_width, screen_height, fps=stream_fps,
+                           encoder=hls_encoder, bitrate=hls_bitrate, verbose=verbose)
+            print(f"HLS 配信開始: {os.path.abspath(hls_dir)}/stream.m3u8 "
+                  f"({screen_width}x{screen_height} @ {stream_fps}fps)  Ctrl+C で終了")
 
         context_reinit_interval = 600
         last_context_reinit_time = time.time()
@@ -728,8 +809,15 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
         fps_count = 0
         t0 = time.time()
 
-        # 初期フレームを取得（blocking）
-        curr_frame = frame_queue.get()
+        # 初期フレームを取得（blocking）。生成スレッドが初期化で落ちたら終了して、外側の再起動に任せる
+        while True:
+            try:
+                curr_frame = frame_queue.get(timeout=5)
+                break
+            except queue.Empty:
+                if not gan_thread.is_alive():
+                    print("\n[ERROR] 生成スレッドが初期化中に停止しました。終了します。")
+                    raise SystemExit(3)
         prev_frame = curr_frame.copy()
         last_frame_update = time.time()
         display_interval_ms = 33
@@ -751,7 +839,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                     print(f"\n[GC] メモリ使用量: {mem:.2f} MB")
 
             # ウィンドウリサイズなどの再設定
-            if now - last_context_reinit_time >= context_reinit_interval:
+            if output == "screen" and now - last_context_reinit_time >= context_reinit_interval:
                 print("\n[Context Reinit] OpenCV ウィンドウを再設定しました。")
                 cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN,
                                       cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
@@ -766,6 +854,15 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                     last_frame_update = time.time()
             except queue.Empty:
                 pass
+
+            # 配信モードでは、生成が止まったまま黒や静止画を流し続けないよう、プロセスごと終了する
+            if sink is not None:
+                if not gan_thread.is_alive():
+                    print("\n[ERROR] 生成スレッドが停止しました。終了します。")
+                    raise SystemExit(3)
+                if time.time() - last_frame_update > 120:
+                    print("\n[ERROR] 120 秒間新しいフレームがありません。終了します。")
+                    raise SystemExit(4)
 
             t = (time.time() - last_frame_update) / stylegan_interval
             if t > 1:
@@ -805,7 +902,10 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
             # 画面サイズに合わせる (letterbox)
             letterboxed_frame = letterbox_frame(frame_with_text, screen_width, screen_height)
-            cv2.imshow(window_name, letterboxed_frame)
+            if sink is not None:
+                sink.push(letterboxed_frame)
+            else:
+                cv2.imshow(window_name, letterboxed_frame)
 
             # スクリーンショット保存タイミング
             # if now - last_screenshot_time >= screenshot_interval:
@@ -824,6 +924,11 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
                 t0 = time.time()
                 fps_count = 0
 
+            if sink is not None:
+                # 配信の速さは HLSSink の書き出しスレッドが一定に保つ。ここは合成の頻度だけ決める
+                time.sleep(1.0 / max(stream_fps, 1))
+                continue
+
             key = cv2.waitKey(display_interval_ms) & 0xFF
             if key == ord('q'):
                 print("\n'q' が押されたため終了します。")
@@ -832,7 +937,14 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
         cv2.destroyAllWindows()
 
+    except KeyboardInterrupt:
+        print("\n終了します。")
     finally:
+        try:
+            if 'sink' in locals() and sink is not None:
+                sink.close()
+        except Exception:
+            pass
         if profiler is not None:
             profiler.disable()
             ps = pstats.Stats(profiler)
