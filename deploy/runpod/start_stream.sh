@@ -31,6 +31,9 @@ TRANSLATE=--translate
 
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-$(python -c "import torch;c=torch.cuda.get_device_capability(0);print(f'{c[0]}.{c[1]}')" 2>/dev/null || echo 8.6)}
 
+# Pod の CPU 割り当て (cgroup) は見かけのコア数よりずっと少ない。数値ライブラリのスレッドを絞って取り合いを防ぐ
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4} MKL_NUM_THREADS=${MKL_NUM_THREADS:-4} OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-4}
+
 nohup python serve_hls.py --dir stream --port 8000 > "$LOG/serve.log" 2>&1 &
 
 # 生成側が落ちても自動で立ち上げ直す

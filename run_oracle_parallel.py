@@ -564,6 +564,46 @@ def stylegan_frame_generator(frame_queue, stop_event, config_args):
         frame_idx_local += 1
         frame_idx += 1
 
+        # 配信モードでは GAN 単体の生成速度を 30 秒ごとにログへ出す (画面モードの出力は変えない)
+        if config_args.get("log_gan_fps"):
+            _now = time.time()
+            if frame_idx == 1:
+                _gan_t0, _gan_n0 = _now, frame_idx
+            elif _now - _gan_t0 >= 30.0:
+                print(f"\n[GAN] {(frame_idx - _gan_n0) / (_now - _gan_t0):.1f} fps", flush=True)
+                _gan_t0, _gan_n0 = _now, frame_idx
+
+
+# -------------------------------
+# 配信モード用の字幕合成 (字幕が変わった時だけ作り直し、字幕のある帯だけを合成する)
+# 計算式は blend_overlay と同じなので、出力される画素値は変わらない
+# -------------------------------
+class CachedTextOverlay:
+    def __init__(self):
+        self._key = None
+        self._band = None   # (y0, y1, overlay_rgb * alpha, 1 - alpha)
+
+    def apply(self, frame, texts, *overlay_args):
+        key = (frame.shape[:2], tuple(texts.get("ja", [])), tuple(texts.get("en", [])))
+        if key != self._key:
+            self._key = key
+            ov = create_text_overlay(frame.shape, texts, *overlay_args)
+            rows = np.flatnonzero(ov[:, :, 3].any(axis=1))
+            if rows.size == 0:
+                self._band = None
+            else:
+                y0, y1 = int(rows[0]), int(rows[-1]) + 1
+                band = ov[y0:y1].astype(np.float32)
+                alpha = band[:, :, 3:4] / 255.0
+                # create_text_overlay は RGBA、フレームは BGR。blend_overlay と同じくチャンネル順はそのまま重ねる
+                self._band = (y0, y1, band[:, :, :3] * alpha, 1.0 - alpha)
+        if self._band is None:
+            return frame
+        y0, y1, premul, inv_alpha = self._band
+        out = frame.copy()
+        out[y0:y1] = (frame[y0:y1].astype(np.float32) * inv_alpha + premul).astype(np.uint8)
+        return out
+
 
 # -------------------------------
 # メインのCLI
@@ -714,6 +754,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             "variations": variations,
             "method": method,
             "chunk_size": chunk_size,
+            "log_gan_fps": output == "hls",
             "random_step_size": random_step_size,
             "stylegan_gpu": stylegan_device,
             "font_scale": font_scale,
@@ -808,6 +849,7 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
 
         fps_count = 0
         t0 = time.time()
+        cached_overlay = CachedTextOverlay()
 
         # 初期フレームを取得（blocking）。生成スレッドが初期化で落ちたら終了して、外側の再起動に任せる
         while True:
@@ -884,18 +926,35 @@ def cli(out_dir, model, labels, size, scale_type, latmask, nxy, splitfine, split
             display_text = current_text if text_visible else {"en": [], "ja": []}
 
             # テキストオーバーレイ合成
-            current_overlay = create_text_overlay(
-                curr_frame.shape,
-                display_text,
-                STYLEGAN_CONFIG['subtitle_ja_y'],
-                STYLEGAN_CONFIG['subtitle_en_y'],
-                font_thickness,
-                STYLEGAN_CONFIG['font_path_en'],
-                STYLEGAN_CONFIG['font_path_ja'],
-                STYLEGAN_CONFIG['subtitle_ja_font_size'],
-                STYLEGAN_CONFIG['subtitle_en_font_size']
-            )
-            if current_overlay is not None:
+            if sink is not None:
+                # 配信モード: 字幕が変わった時だけ作り直す (毎フレームの全面合成は CPU を使い切る)
+                frame_with_text = cached_overlay.apply(
+                    curr_frame,
+                    display_text,
+                    STYLEGAN_CONFIG['subtitle_ja_y'],
+                    STYLEGAN_CONFIG['subtitle_en_y'],
+                    font_thickness,
+                    STYLEGAN_CONFIG['font_path_en'],
+                    STYLEGAN_CONFIG['font_path_ja'],
+                    STYLEGAN_CONFIG['subtitle_ja_font_size'],
+                    STYLEGAN_CONFIG['subtitle_en_font_size']
+                )
+                current_overlay = None
+            else:
+                current_overlay = create_text_overlay(
+                    curr_frame.shape,
+                    display_text,
+                    STYLEGAN_CONFIG['subtitle_ja_y'],
+                    STYLEGAN_CONFIG['subtitle_en_y'],
+                    font_thickness,
+                    STYLEGAN_CONFIG['font_path_en'],
+                    STYLEGAN_CONFIG['font_path_ja'],
+                    STYLEGAN_CONFIG['subtitle_ja_font_size'],
+                    STYLEGAN_CONFIG['subtitle_en_font_size']
+                )
+            if sink is not None:
+                pass
+            elif current_overlay is not None:
                 frame_with_text = blend_overlay(curr_frame, current_overlay)
             else:
                 frame_with_text = curr_frame

@@ -39,6 +39,7 @@ class HLSSink:
         self._has_frame = threading.Event()
         self._proc = None
         self.frames_written = 0
+        self.frames_pushed = 0   # 生成側から届いた新しいフレーム数 (実際の生成速度の計測用)
         self.restarts = 0
 
         self._prepare_dir()
@@ -110,6 +111,7 @@ class HLSSink:
             frame = cv2.resize(frame, (self.width, self.height))
         with self._lock:
             self._latest = np.ascontiguousarray(frame, dtype=np.uint8)
+            self.frames_pushed += 1
         self._has_frame.set()
 
     def _writer_loop(self):
@@ -118,7 +120,14 @@ class HLSSink:
                 return
         interval = 1.0 / self.fps
         next_t = time.monotonic()
+        stat_t, stat_n = next_t, self.frames_pushed
         while not self._stop.is_set():
+            now = time.monotonic()
+            if now - stat_t >= 30.0:
+                # 30 秒ごとに実際の生成速度をログへ (配信は常に self.fps で、足りない分は直前のフレームを繰り返す)
+                print(f"\n[HLSSink] generated {(self.frames_pushed - stat_n) / (now - stat_t):.1f} fps "
+                      f"(stream {self.fps} fps)", flush=True)
+                stat_t, stat_n = now, self.frames_pushed
             with self._lock:
                 data = self._latest.tobytes()
             try:

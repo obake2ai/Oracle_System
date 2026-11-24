@@ -38,10 +38,21 @@ serve_hls.py :8000  --HTTPS (RunPod プロキシ)-->    -> プロジェクタ
 - 2026-10-29 Mac (CPU) で確認済み
   - 合成映像 -> HLS -> serve_hls -> player: ライブ再生、配信停止から約 13 秒で予備映像へ、配信復帰後にライブへ自動で戻る (Chrome headless で 3 段階を撮影)
   - 本物の生成スクリプト `--output hls` + 代用モデル (NVIDIA 公式 StyleGAN3-R afhqv2 512) + 代用字幕: 1280x720 / 30fps の H.264 で配信され、日英字幕が重なることを確認
-- 未確認: RunPod の GPU 上での速度、胎児モデルと祈りの GPT の重み (旧 PC から回収待ち)、本番フォント
+- 2026-11-24 RunPod (RTX 4090 Secure、$0.89/時、Pod `p6wry0zxb382lc` = organs-iamas-stream) で確認済み。試験後は停止 (EXITED、ボリュームは残る)
+  - 代用モデル + 代用字幕、生成 1610x720 → 配信 1920x1080 / 30fps / H.264。公開 URL `https://<POD_ID>-8000.proxy.runpod.net/stream.m3u8` から手元で取得でき、字幕も乗る
+  - 速度: GAN 単体 約 20 fps、字幕合成後に配信へ乗る絵 約 11 fps (足りない分は直前のフレームを繰り返して 30fps を保つ)。GPU 使用率 約 78%、VRAM 6.6 GB
+  - 当初は 1.5 fps 前後しか出なかった。原因は GPU ではなく CPU 側: Pod の CPU 割り当ては 13.6 コア分 (見かけは 80 コア) で、字幕を毎フレーム全面合成する処理が 1 フレーム約 140 ms かかっていた。配信モードだけ `CachedTextOverlay` (字幕が変わった時だけ作り直し、字幕の帯だけ合成。画素値は従来と一致することを確認) に替え、`OMP_NUM_THREADS=4` を設定
+  - 初回起動は CUDA 拡張のコンパイルで映像が出るまで 2〜3 分かかる
+  - ログに `[GAN] x fps` (生成スレッド) と `[HLSSink] generated x fps` (合成ループ) が 30 秒ごとに出る
+- 未確認: 胎児モデルと祈りの GPT の重み (旧 PC から回収待ち) での速度、本番フォント、会場の無線での再生
 
 ## RunPod での手順
 
+0. Pod の作成・停止は `deploy/runpod/pod.mjs` で行える (RunPod REST API v2。v1 の `rest.runpod.io` は 2026-11-15 に廃止)
+   ```bash
+   node --env-file=<RUNPOD_API_KEY の入ったファイル> deploy/runpod/pod.mjs list | create | wait <id> | stop <id> | start <id> | delete <id>
+   ```
+   停止中の Pod を `start` すると SSH のポートが変わることがある。`wait <id>` で接続先を取り直す
 1. 個人の RunPod アカウントで Pod を作る (電通 KESHIKI の RunPod は使わない)
    - テンプレート: RunPod PyTorch (CUDA 12.x)。GPU: RTX 3090 / 4090 / A5000 などを機種指定 (Blackwell は torch cu128 が要る)
    - Volume を `/workspace` に、HTTP ポート `8000` を公開
